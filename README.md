@@ -1,74 +1,49 @@
 # Centromere Evolution Simulator
 
-Real-time visualization of centromeric repeat array evolution.
+Real-time visualization of centromeric repeat array evolution using raylib.
 
 ## Overview
 
-This project simulates how centromeric DNA repeat arrays evolve over time through:
+Simulates how centromeric DNA repeat arrays evolve over time through:
 - **SNPs** (single nucleotide polymorphisms)
-- **Insertions** (tandem duplications)
-- **Deletions** (repeat removal)
+- **Tandem duplications** (duplicate a segment in place)
+- **Deletions** (remove a segment)
 
-All mutation rates follow Poisson distributions with configurable lambda parameters.
+All mutation rates follow Poisson distributions. INDELs are frame-aligned to maintain repeat unit boundaries.
 
-## Project Structure
+## Building
 
-```
-censim-interactive/
-├── Python prototype (current)
-│   ├── main.py          # Entry point
-│   ├── simulation.py    # Evolution engine
-│   ├── colorizer.py     # DNA sequence to RGB color
-│   └── visualizer.py    # Matplotlib-based visualization
-│
-└── C/raylib version (planned)
-    └── ...
-```
-
-## Python Prototype
-
-### Requirements
+Requires raylib 5.x and premake5:
 
 ```bash
-pip install numpy matplotlib
+brew install raylib premake
+
+# Generate makefiles and build
+premake5 gmake2
+make -C build config=release
+
+# Run
+./bin/Release/censim
 ```
 
-### Usage
+## Controls
 
-```bash
-# Interactive visualizer
-python main.py
-
-# Headless simulation (for testing)
-python main.py --headless -g 1000
-
-# Performance benchmark
-python main.py --benchmark
-```
-
-### Controls (Interactive Mode)
-
-- **Start/Stop**: Toggle simulation running
-- **Step**: Advance one generation
-- **Reset**: Restart with initial conditions
+- **F11 / F**: Toggle fullscreen
+- **Start/Stop**: Toggle simulation
+- **Step 1000**: Advance 1000 generations
+- **Reset**: Restart simulation
 - **Sliders**: Adjust mutation rates in real-time
-  - Insertion rate (lambda)
-  - Deletion rate (lambda)
-  - INDEL size (lambda for Poisson-distributed size)
-  - SNP rate (lambda)
-  - Animation speed
 - **Bounding**: Toggle min/max array size enforcement
 
-## Simulation Parameters
+## Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `insertion_rate` | 0.25 | Expected insertions per generation |
-| `deletion_rate` | 0.25 | Expected deletions per generation |
+| `indel_rate` | 0.5 | Expected INDELs per generation |
 | `indel_size_lambda` | 7.6 | Expected size of each INDEL |
 | `snp_rate` | 0.1 | Expected SNPs per generation |
-| `min_array_size` | 100 | Minimum repeats (when bounding enabled) |
-| `max_array_size` | 50000 | Maximum repeats (when bounding enabled) |
+| `min_array_size` | 300 | Minimum repeats (when bounding enabled) |
+| `max_array_size` | 50000 | Maximum repeats |
 | `initial_size` | 10000 | Starting number of repeats |
 
 ## Coloring Method
@@ -79,21 +54,8 @@ Uses **orthogonal random projection** to map DNA sequences to RGB colors:
 2. Project through orthogonalized random matrix (712 → 3 dimensions)
 3. Normalize to [0, 1] RGB range
 
-Similar sequences get similar colors, making patterns visible in the visualization.
+Similar sequences get similar colors, making evolutionary patterns visible.
 
 ## Default Monomer
 
-The simulation starts with copies of the CEN178 consensus sequence:
-```
-AGTATAAGAACTTAAACCGCAACCCGATCTTAAAAGCCTAAGTAGTGTTTCCTTGTTAGAA
-GACACAAAGCCAAAGACTCATATGGACTTTGGCTACACCATGAAAGCTTTGAGAAGCAAGA
-AGAAGGTTGGTTAGTGTTTTGGAGTCGAATATGACTTGATGTCATGTGTATGATTG
-```
-
-## Future: C/raylib Version
-
-The Python prototype will be reimplemented in C with raylib for:
-- 60+ FPS real-time rendering
-- Larger arrays (100K+ repeats)
-- GPU-accelerated colorization
-- Interactive parameter adjustment
+The simulation starts with copies of the CEN178 consensus sequence (178bp).

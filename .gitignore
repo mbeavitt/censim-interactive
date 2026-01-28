@@ -33,3 +33,7 @@ bin/
 *.jpg
 *.gif
 output/
+build/
+bin/
+*.o
+.DS_Store
