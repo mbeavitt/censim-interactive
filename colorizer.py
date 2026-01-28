@@ -20,9 +20,10 @@ class OrthogonalProjectionColorizer:
     giving good color spread across RGB space.
     """
 
-    def __init__(self, seq_len: int = 178, seed: int = 42):
+    def __init__(self, seq_len: int = 178, seed: int = 42, fixed_bounds: bool = True):
         self.seq_len = seq_len
         self.seed = seed
+        self.fixed_bounds = fixed_bounds
 
         # Create and cache projection matrix
         np.random.seed(seed)
@@ -35,8 +36,37 @@ class OrthogonalProjectionColorizer:
         # Cache for normalized colors
         self._color_cache: Dict[str, np.ndarray] = {}
         self._raw_colors: Dict[str, np.ndarray] = {}
-        self._min_vals = None
-        self._max_vals = None
+
+        # Fixed normalization bounds (computed from projection properties)
+        # For orthonormal projection, output range is roughly [-sqrt(n), sqrt(n)]
+        # where n = number of 1s in one-hot encoding = seq_len
+        if fixed_bounds:
+            # Estimate bounds empirically by sampling random sequences
+            self._compute_fixed_bounds()
+        else:
+            self._min_vals = None
+            self._max_vals = None
+
+    def _compute_fixed_bounds(self):
+        """Compute fixed normalization bounds by sampling random sequences."""
+        np.random.seed(self.seed + 1000)  # Different seed for sampling
+
+        # Generate many random sequences to estimate the range
+        n_samples = 1000
+        raw_values = []
+
+        for _ in range(n_samples):
+            # Random sequence
+            seq = ''.join(np.random.choice(list('ACGT'), self.seq_len))
+            one_hot = self._one_hot(seq)
+            rgb = one_hot @ self.projection
+            raw_values.append(rgb)
+
+        raw_values = np.array(raw_values)
+
+        # Use percentiles to avoid outliers, with some padding
+        self._min_vals = np.percentile(raw_values, 1, axis=0) - 0.5
+        self._max_vals = np.percentile(raw_values, 99, axis=0) + 0.5
 
     def _one_hot(self, seq: str) -> np.ndarray:
         """Convert sequence to one-hot encoding."""
@@ -73,17 +103,18 @@ class OrthogonalProjectionColorizer:
         """
         Compute normalized RGB colors for a batch of sequences.
 
-        Call this once with all sequences to establish normalization bounds,
-        then use get_color() for individual lookups.
+        With fixed_bounds=True (default), uses pre-computed bounds for consistent colors.
+        With fixed_bounds=False, recomputes bounds from this batch.
         """
         # Compute raw colors
         raw_colors = np.array([self.get_raw_color(seq) for seq in sequences])
 
-        # Update normalization bounds
-        self._min_vals = raw_colors.min(axis=0)
-        self._max_vals = raw_colors.max(axis=0)
+        # Update normalization bounds only if not using fixed bounds
+        if not self.fixed_bounds:
+            self._min_vals = raw_colors.min(axis=0)
+            self._max_vals = raw_colors.max(axis=0)
 
-        # Normalize
+        # Normalize using current bounds
         range_vals = self._max_vals - self._min_vals
         range_vals[range_vals == 0] = 1  # Avoid division by zero
 
@@ -101,18 +132,14 @@ class OrthogonalProjectionColorizer:
         Get normalized RGB color for a single sequence.
 
         If the sequence was seen in colorize_batch(), returns cached result.
-        Otherwise, normalizes using existing bounds (or returns gray if no bounds set).
+        Otherwise, computes and caches the color using fixed bounds.
         """
         if seq in self._color_cache:
             return self._color_cache[seq]
 
         raw = self.get_raw_color(seq)
 
-        if self._min_vals is None:
-            # No normalization bounds yet - return middle gray
-            return np.array([0.5, 0.5, 0.5])
-
-        # Normalize using existing bounds
+        # Normalize using fixed bounds
         range_vals = self._max_vals - self._min_vals
         range_vals[range_vals == 0] = 1
 
@@ -128,9 +155,10 @@ class OrthogonalProjectionColorizer:
         return tuple((rgb * 255).astype(np.uint8))
 
     def clear_cache(self):
-        """Clear the color cache (call when sequences change significantly)."""
+        """Clear the color cache (keeps fixed bounds)."""
         self._color_cache.clear()
         self._raw_colors.clear()
+        # Note: does NOT clear _min_vals/_max_vals so colors stay consistent
 
 
 # Quick test

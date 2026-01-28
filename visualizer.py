@@ -37,7 +37,7 @@ class SimulationVisualizer:
 
         # State
         self.running = False
-        self.generation_delay = 0.05  # seconds between generations
+        self.gens_per_frame = 100  # generations per animation frame
 
         # Setup will be called when show() is invoked
         self.fig = None
@@ -96,16 +96,16 @@ class SimulationVisualizer:
         self.fig = plt.figure(figsize=(16, 10))
 
         # Main visualization area
-        self.ax_main = self.fig.add_axes([0.05, 0.25, 0.65, 0.70])
+        self.ax_main = self.fig.add_axes([0.05, 0.12, 0.65, 0.83])
         self.ax_main.set_title("Centromere Evolution Simulation")
         self.ax_main.axis('off')
 
         # Stats panel
-        self.ax_stats = self.fig.add_axes([0.75, 0.55, 0.22, 0.40])
+        self.ax_stats = self.fig.add_axes([0.75, 0.50, 0.22, 0.45])
         self.ax_stats.axis('off')
         self.stats_text = self.ax_stats.text(
             0.05, 0.95, "", transform=self.ax_stats.transAxes,
-            fontsize=11, verticalalignment='top', fontfamily='monospace',
+            fontsize=10, verticalalignment='top', fontfamily='monospace',
             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5)
         )
 
@@ -117,40 +117,40 @@ class SimulationVisualizer:
         slider_color = 'lightgoldenrodyellow'
 
         # INDEL rate slider (combined dup + del)
-        ax_indel = self.fig.add_axes([0.75, 0.45, 0.20, 0.03], facecolor=slider_color)
+        ax_indel = self.fig.add_axes([0.75, 0.42, 0.20, 0.025], facecolor=slider_color)
         self.slider_indel = Slider(ax_indel, 'INDEL rate', 0, 3, valinit=self.params.indel_rate)
         self.slider_indel.on_changed(self._on_indel_change)
 
         # INDEL size slider
-        ax_size = self.fig.add_axes([0.75, 0.40, 0.20, 0.03], facecolor=slider_color)
+        ax_size = self.fig.add_axes([0.75, 0.38, 0.20, 0.025], facecolor=slider_color)
         self.slider_size = Slider(ax_size, 'INDEL size', 1, 30, valinit=self.params.indel_size_lambda)
         self.slider_size.on_changed(self._on_size_change)
 
         # SNP rate slider
-        ax_snp = self.fig.add_axes([0.75, 0.35, 0.20, 0.03], facecolor=slider_color)
+        ax_snp = self.fig.add_axes([0.75, 0.34, 0.20, 0.025], facecolor=slider_color)
         self.slider_snp = Slider(ax_snp, 'SNP rate', 0, 1, valinit=self.params.snp_rate)
         self.slider_snp.on_changed(self._on_snp_change)
 
-        # Speed slider
-        ax_speed = self.fig.add_axes([0.75, 0.30, 0.20, 0.03], facecolor=slider_color)
-        self.slider_speed = Slider(ax_speed, 'Speed', 0.01, 0.5, valinit=self.generation_delay)
-        self.slider_speed.on_changed(self._on_speed_change)
+        # Generations per frame slider
+        ax_gpf = self.fig.add_axes([0.75, 0.30, 0.20, 0.025], facecolor=slider_color)
+        self.slider_gpf = Slider(ax_gpf, 'Gens/frame', 10, 100000, valinit=self.gens_per_frame, valstep=100)
+        self.slider_gpf.on_changed(self._on_gpf_change)
 
         # Buttons
-        ax_start = self.fig.add_axes([0.75, 0.20, 0.10, 0.05])
+        ax_start = self.fig.add_axes([0.75, 0.22, 0.10, 0.04])
         self.btn_start = Button(ax_start, 'Start/Stop')
         self.btn_start.on_clicked(self._on_start_stop)
 
-        ax_reset = self.fig.add_axes([0.86, 0.20, 0.10, 0.05])
+        ax_reset = self.fig.add_axes([0.86, 0.22, 0.10, 0.04])
         self.btn_reset = Button(ax_reset, 'Reset')
         self.btn_reset.on_clicked(self._on_reset)
 
-        ax_step = self.fig.add_axes([0.75, 0.13, 0.10, 0.05])
-        self.btn_step = Button(ax_step, 'Step')
+        ax_step = self.fig.add_axes([0.75, 0.16, 0.10, 0.04])
+        self.btn_step = Button(ax_step, 'Step 1000')
         self.btn_step.on_clicked(self._on_step)
 
         # Checkbox for bounding
-        ax_check = self.fig.add_axes([0.86, 0.10, 0.12, 0.10])
+        ax_check = self.fig.add_axes([0.86, 0.14, 0.12, 0.08])
         self.check_bound = CheckButtons(ax_check, ['Bounding'], [self.params.bounding_enabled])
         self.check_bound.on_clicked(self._on_bound_toggle)
 
@@ -169,8 +169,8 @@ class SimulationVisualizer:
         if self.sim:
             self.sim.params.snp_rate = val
 
-    def _on_speed_change(self, val):
-        self.generation_delay = val
+    def _on_gpf_change(self, val):
+        self.gens_per_frame = int(val)
 
     def _on_start_stop(self, event):
         self.running = not self.running
@@ -183,7 +183,7 @@ class SimulationVisualizer:
 
     def _on_step(self, event):
         if self.sim:
-            self.sim.step()
+            self.sim.run(1000)  # Run 1000 generations per step
             self._refresh_colors()
             self._update_display()
             self.fig.canvas.draw_idle()
@@ -209,10 +209,11 @@ class SimulationVisualizer:
     def _animation_step(self, frame):
         """Animation callback."""
         if self.running and self.sim:
-            self.sim.step()
+            # Run generations based on slider
+            self.sim.run(self.gens_per_frame)
 
-            # Refresh colors periodically (every 10 generations)
-            if self.sim.state.generation % 10 == 0:
+            # Refresh colors periodically
+            if self.sim.state.generation % 1000 == 0:
                 self._refresh_colors()
 
             self._update_display()
@@ -225,11 +226,11 @@ class SimulationVisualizer:
         self._initialize_simulation()
         self._update_display()
 
-        # Create animation
+        # Create animation (fixed 50ms interval, speed controlled by gens_per_frame)
         self.anim = FuncAnimation(
             self.fig,
             self._animation_step,
-            interval=int(self.generation_delay * 1000),
+            interval=50,  # 20 FPS
             blit=False,
             cache_frame_data=False
         )
