@@ -24,6 +24,9 @@ struct SimParams {
     int min_array_size;
     int max_array_size;
     bool bounding_enabled;
+    // Elastic bounding
+    int target_size;
+    float elasticity;  // 0 = no effect, higher = stronger pull toward target
 };
 
 // Statistics

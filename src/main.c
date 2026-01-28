@@ -218,8 +218,16 @@ int main(void) {
             &gens_per_frame, 10.0f, 100000.0f);
         btn_y += 45;
 
+        // Elasticity
+        DrawText("Elasticity:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
+        GuiSlider(
+            (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
+            NULL, TextFormat("%.2f", sim.params.elasticity),
+            &sim.params.elasticity, 0.0f, 1.0f);
+        btn_y += 45;
+
         // Bounding checkbox
-        GuiCheckBox((Rectangle){panel_x + 20, btn_y, 20, 20}, "Bounding enabled", &sim.params.bounding_enabled);
+        GuiCheckBox((Rectangle){panel_x + 20, btn_y, 20, 20}, "Hard bounds", &sim.params.bounding_enabled);
         btn_y += 50;
 
         // Stats panel

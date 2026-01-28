@@ -12,6 +12,8 @@
 #define DEFAULT_INDEL_RATE 0.5f
 #define DEFAULT_INDEL_SIZE_LAMBDA 7.6f
 #define DEFAULT_SNP_RATE 0.1f
+#define DEFAULT_TARGET_SIZE 10000
+#define DEFAULT_ELASTICITY 0.1f  // Soft elastic bound
 
 // Visualization
 #define GRID_WIDTH 100
