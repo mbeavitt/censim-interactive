@@ -79,8 +79,9 @@ class SimulationVisualizer:
             f"Unique seqs: {stats['unique_sequences']:,}\n"
             f"Diversity: {stats['diversity']:.3f}\n"
             f"SNPs: {stats['snps']}\n"
-            f"Insertions: {stats['insertions']}\n"
-            f"Deletions: {stats['deletions']}"
+            f"Duplications: {stats['duplications']}\n"
+            f"Deletions: {stats['deletions']}\n"
+            f"Collapsed: {stats['collapsed']}"
         )
         self.stats_text.set_text(stats_text)
 
@@ -115,58 +116,48 @@ class SimulationVisualizer:
         # Sliders
         slider_color = 'lightgoldenrodyellow'
 
-        # Insertion rate slider
-        ax_ins = self.fig.add_axes([0.75, 0.45, 0.20, 0.03], facecolor=slider_color)
-        self.slider_ins = Slider(ax_ins, 'Ins rate', 0, 2, valinit=self.params.insertion_rate)
-        self.slider_ins.on_changed(self._on_ins_change)
-
-        # Deletion rate slider
-        ax_del = self.fig.add_axes([0.75, 0.40, 0.20, 0.03], facecolor=slider_color)
-        self.slider_del = Slider(ax_del, 'Del rate', 0, 2, valinit=self.params.deletion_rate)
-        self.slider_del.on_changed(self._on_del_change)
+        # INDEL rate slider (combined dup + del)
+        ax_indel = self.fig.add_axes([0.75, 0.45, 0.20, 0.03], facecolor=slider_color)
+        self.slider_indel = Slider(ax_indel, 'INDEL rate', 0, 3, valinit=self.params.indel_rate)
+        self.slider_indel.on_changed(self._on_indel_change)
 
         # INDEL size slider
-        ax_size = self.fig.add_axes([0.75, 0.35, 0.20, 0.03], facecolor=slider_color)
+        ax_size = self.fig.add_axes([0.75, 0.40, 0.20, 0.03], facecolor=slider_color)
         self.slider_size = Slider(ax_size, 'INDEL size', 1, 30, valinit=self.params.indel_size_lambda)
         self.slider_size.on_changed(self._on_size_change)
 
         # SNP rate slider
-        ax_snp = self.fig.add_axes([0.75, 0.30, 0.20, 0.03], facecolor=slider_color)
+        ax_snp = self.fig.add_axes([0.75, 0.35, 0.20, 0.03], facecolor=slider_color)
         self.slider_snp = Slider(ax_snp, 'SNP rate', 0, 1, valinit=self.params.snp_rate)
         self.slider_snp.on_changed(self._on_snp_change)
 
         # Speed slider
-        ax_speed = self.fig.add_axes([0.75, 0.25, 0.20, 0.03], facecolor=slider_color)
+        ax_speed = self.fig.add_axes([0.75, 0.30, 0.20, 0.03], facecolor=slider_color)
         self.slider_speed = Slider(ax_speed, 'Speed', 0.01, 0.5, valinit=self.generation_delay)
         self.slider_speed.on_changed(self._on_speed_change)
 
         # Buttons
-        ax_start = self.fig.add_axes([0.75, 0.15, 0.10, 0.05])
+        ax_start = self.fig.add_axes([0.75, 0.20, 0.10, 0.05])
         self.btn_start = Button(ax_start, 'Start/Stop')
         self.btn_start.on_clicked(self._on_start_stop)
 
-        ax_reset = self.fig.add_axes([0.86, 0.15, 0.10, 0.05])
+        ax_reset = self.fig.add_axes([0.86, 0.20, 0.10, 0.05])
         self.btn_reset = Button(ax_reset, 'Reset')
         self.btn_reset.on_clicked(self._on_reset)
 
-        ax_step = self.fig.add_axes([0.75, 0.08, 0.10, 0.05])
+        ax_step = self.fig.add_axes([0.75, 0.13, 0.10, 0.05])
         self.btn_step = Button(ax_step, 'Step')
         self.btn_step.on_clicked(self._on_step)
 
         # Checkbox for bounding
-        ax_check = self.fig.add_axes([0.86, 0.05, 0.12, 0.10])
+        ax_check = self.fig.add_axes([0.86, 0.10, 0.12, 0.10])
         self.check_bound = CheckButtons(ax_check, ['Bounding'], [self.params.bounding_enabled])
         self.check_bound.on_clicked(self._on_bound_toggle)
 
-    def _on_ins_change(self, val):
-        self.params.insertion_rate = val
+    def _on_indel_change(self, val):
+        self.params.indel_rate = val
         if self.sim:
-            self.sim.params.insertion_rate = val
-
-    def _on_del_change(self, val):
-        self.params.deletion_rate = val
-        if self.sim:
-            self.sim.params.deletion_rate = val
+            self.sim.params.indel_rate = val
 
     def _on_size_change(self, val):
         self.params.indel_size_lambda = val

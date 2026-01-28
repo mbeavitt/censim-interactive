@@ -1,17 +1,19 @@
 """
 Centromere Evolution Simulation Engine
 
-Simulates the evolution of a centromeric repeat array over time using:
+Based on the censim model - simulates evolution of a centromeric repeat array using:
 - SNPs (single nucleotide polymorphisms)
-- Insertions (duplication of repeats)
-- Deletions (removal of repeats)
+- Tandem duplications (duplicate a segment in place)
+- Deletions (remove a segment)
 
-All mutation rates are Poisson-distributed and configurable.
+All INDEL sizes are frame-aligned (multiples of repeat_size) to maintain
+repeat unit boundaries.
 """
 
+import random
 import numpy as np
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Callable
+from typing import List, Optional, Callable
 import copy
 
 # Default CEN178 monomer
@@ -20,26 +22,114 @@ DEFAULT_MONOMER = "AGTATAAGAACTTAAACCGCAACCCGATCTTAAAAGCCTAAGTAGTGTTTCCTTGTTAGAA
 BASES = ['A', 'C', 'G', 'T']
 
 
+class RepeatSequence:
+    """Store sequence as a list of repeat units for efficient insertions/deletions.
+
+    Instead of storing millions of characters, we store ~10-15K repeat units.
+    Insertions/deletions operate on units, which is ~178x faster.
+    """
+
+    def __init__(self, units: List[bytearray], repeat_size: int = 178):
+        self.repeat_size = repeat_size
+        self.units = units
+
+    @classmethod
+    def from_sequence(cls, sequence: str, repeat_size: int = 178) -> 'RepeatSequence':
+        """Create from a full DNA sequence string."""
+        units = []
+        for i in range(0, len(sequence), repeat_size):
+            units.append(bytearray(sequence[i:i+repeat_size], 'ascii'))
+        return cls(units, repeat_size)
+
+    @classmethod
+    def from_monomer(cls, monomer: str, num_copies: int) -> 'RepeatSequence':
+        """Create from repeated copies of a monomer."""
+        repeat_size = len(monomer)
+        units = [bytearray(monomer, 'ascii') for _ in range(num_copies)]
+        return cls(units, repeat_size)
+
+    def __len__(self) -> int:
+        """Return total sequence length in base pairs."""
+        if not self.units:
+            return 0
+        return len(self.units) * self.repeat_size
+
+    def num_units(self) -> int:
+        """Return number of repeat units."""
+        return len(self.units)
+
+    def __getitem__(self, idx: int) -> str:
+        """Get character at base pair position idx."""
+        unit_num = idx // self.repeat_size
+        pos_in_unit = idx % self.repeat_size
+        return chr(self.units[unit_num][pos_in_unit])
+
+    def __setitem__(self, idx: int, value: str):
+        """Set character at base pair position idx."""
+        unit_num = idx // self.repeat_size
+        pos_in_unit = idx % self.repeat_size
+        self.units[unit_num][pos_in_unit] = ord(value)
+
+    def get_unit(self, idx: int) -> str:
+        """Get repeat unit at index as string."""
+        return self.units[idx].decode('ascii')
+
+    def get_unit_bytes(self, idx: int) -> bytearray:
+        """Get repeat unit at index as bytearray."""
+        return self.units[idx]
+
+    def duplicate_units(self, start: int, end: int):
+        """Tandem duplication: duplicate units[start:end] in place.
+
+        Before: [A][B][C][D][E]
+        duplicate_units(1, 3):
+        After:  [A][B][C][B][C][D][E]
+        """
+        # Copy the units to duplicate
+        units_to_insert = [bytearray(unit) for unit in self.units[start:end]]
+        # Insert after the original segment
+        self.units[end:end] = units_to_insert
+
+    def delete_units(self, start: int, end: int):
+        """Delete units from start to end.
+
+        Before: [A][B][C][D][E]
+        delete_units(1, 3):
+        After:  [A][D][E]
+        """
+        del self.units[start:end]
+
+    def to_string(self) -> str:
+        """Convert entire sequence to string."""
+        return ''.join(unit.decode('ascii') for unit in self.units)
+
+    def get_unique_sequences(self) -> List[str]:
+        """Get list of unique repeat sequences."""
+        return list(set(unit.decode('ascii') for unit in self.units))
+
+
 @dataclass
 class SimulationParams:
     """Parameters controlling the simulation."""
 
-    # INDEL rates (per generation)
-    insertion_rate: float = 0.25      # lambda for insertion events
-    deletion_rate: float = 0.25       # lambda for deletion events
-    indel_size_lambda: float = 7.6    # lambda for size of INDELs (Poisson)
+    # INDEL rates (expected events per generation, Poisson lambda)
+    indel_rate: float = 0.5           # lambda for total INDEL events
+    indel_size_lambda: float = 7.6    # lambda for number of repeats per INDEL
 
     # SNP rate
     snp_rate: float = 0.1             # lambda for SNP events per generation
 
     # Array bounds
-    min_array_size: int = 100         # Minimum number of repeats
+    min_array_size: int = 300         # Minimum number of repeats (collapse threshold)
     max_array_size: int = 50000       # Maximum number of repeats
     bounding_enabled: bool = True     # Whether to enforce bounds
 
     # Initial state
     initial_size: int = 10000         # Starting number of repeats
     initial_monomer: str = DEFAULT_MONOMER
+
+    # Collapse detection
+    max_consecutive_failures: int = 5000  # Max failed attempts before declaring collapse
 
     def copy(self) -> 'SimulationParams':
         return copy.deepcopy(self)
@@ -49,9 +139,9 @@ class SimulationParams:
 class MutationEvent:
     """Record of a mutation event."""
     generation: int
-    event_type: str  # 'snp', 'insertion', 'deletion'
-    position: int    # Position in array (or base position for SNP)
-    size: int = 1    # Number of repeats affected (or 1 for SNP)
+    event_type: str  # 'snp', 'dup', 'del'
+    position: int    # Unit position (or bp position for SNP)
+    size: int = 1    # Number of repeats affected
     details: str = ""
 
 
@@ -59,26 +149,36 @@ class MutationEvent:
 class SimulationState:
     """Current state of the simulation."""
     generation: int = 0
-    repeats: List[str] = field(default_factory=list)
+    seq: Optional[RepeatSequence] = None
     history: List[MutationEvent] = field(default_factory=list)
+    collapsed: bool = False
 
     @property
     def size(self) -> int:
-        return len(self.repeats)
+        return self.seq.num_units() if self.seq else 0
+
+    @property
+    def repeats(self) -> List[str]:
+        """Get list of repeat sequences (for colorizer compatibility)."""
+        if not self.seq:
+            return []
+        return [self.seq.get_unit(i) for i in range(self.seq.num_units())]
 
 
 class CentromereSimulator:
     """
     Simulates centromere repeat array evolution.
 
-    The array is represented as a list of DNA sequences (repeat monomers).
-    Each generation, mutations occur according to Poisson-distributed rates.
+    Based on the censim model with frame-aligned INDELs.
     """
 
     def __init__(self, params: Optional[SimulationParams] = None, seed: int = None):
         self.params = params or SimulationParams()
         self.state = SimulationState()
-        self.rng = np.random.default_rng(seed)
+
+        if seed is not None:
+            random.seed(seed)
+            np.random.seed(seed)
 
         # Callbacks for real-time updates
         self.on_mutation: Optional[Callable[[MutationEvent], None]] = None
@@ -88,137 +188,136 @@ class CentromereSimulator:
         """Initialize the repeat array with identical monomers."""
         self.state = SimulationState(
             generation=0,
-            repeats=[self.params.initial_monomer] * self.params.initial_size,
-            history=[]
+            seq=RepeatSequence.from_monomer(
+                self.params.initial_monomer,
+                self.params.initial_size
+            ),
+            history=[],
+            collapsed=False
         )
 
-    def _apply_snp(self, repeat_idx: int) -> MutationEvent:
-        """Apply a single nucleotide polymorphism to a repeat."""
-        seq = list(self.state.repeats[repeat_idx])
-        pos = self.rng.integers(0, len(seq))
-        old_base = seq[pos]
-
-        # Choose a different base
-        new_base = self.rng.choice([b for b in BASES if b != old_base])
-        seq[pos] = new_base
-
-        self.state.repeats[repeat_idx] = ''.join(seq)
-
-        return MutationEvent(
-            generation=self.state.generation,
-            event_type='snp',
-            position=repeat_idx,
-            size=1,
-            details=f"pos {pos}: {old_base}->{new_base}"
-        )
-
-    def _apply_insertion(self, position: int, size: int) -> Optional[MutationEvent]:
-        """Insert duplicated repeats at a position."""
-        if self.params.bounding_enabled:
-            if self.state.size + size > self.params.max_array_size:
-                size = self.params.max_array_size - self.state.size
-                if size <= 0:
-                    return None
-
-        # Duplicate repeats from a nearby region
-        source_start = max(0, position - size)
-        source_end = min(self.state.size, source_start + size)
-        to_insert = self.state.repeats[source_start:source_end]
-
-        # If we couldn't get enough, pad with copies
-        while len(to_insert) < size:
-            to_insert.append(self.state.repeats[position % self.state.size])
-
-        # Insert at position
-        self.state.repeats = (
-            self.state.repeats[:position] +
-            to_insert[:size] +
-            self.state.repeats[position:]
-        )
-
-        return MutationEvent(
-            generation=self.state.generation,
-            event_type='insertion',
-            position=position,
-            size=size,
-            details=f"duplicated from {source_start}"
-        )
-
-    def _apply_deletion(self, position: int, size: int) -> Optional[MutationEvent]:
-        """Delete repeats starting at a position."""
-        if self.params.bounding_enabled:
-            if self.state.size - size < self.params.min_array_size:
-                size = self.state.size - self.params.min_array_size
-                if size <= 0:
-                    return None
-
-        # Ensure we don't delete past the end
-        size = min(size, self.state.size - position)
-        if size <= 0:
-            return None
-
-        self.state.repeats = (
-            self.state.repeats[:position] +
-            self.state.repeats[position + size:]
-        )
-
-        return MutationEvent(
-            generation=self.state.generation,
-            event_type='deletion',
-            position=position,
-            size=size,
-            details=""
-        )
-
-    def step(self) -> List[MutationEvent]:
-        """
-        Advance the simulation by one generation.
-
-        Returns list of mutation events that occurred.
-        """
+    def _apply_snp(self) -> List[MutationEvent]:
+        """Apply SNP mutations for this generation."""
         events = []
+        n_snps = np.random.poisson(self.params.snp_rate)
 
-        # Sample number of each event type from Poisson
-        n_insertions = self.rng.poisson(self.params.insertion_rate)
-        n_deletions = self.rng.poisson(self.params.deletion_rate)
-        n_snps = self.rng.poisson(self.params.snp_rate)
-
-        # Apply insertions
-        for _ in range(n_insertions):
-            if self.state.size == 0:
-                break
-            pos = self.rng.integers(0, self.state.size)
-            size = max(1, self.rng.poisson(self.params.indel_size_lambda))
-            event = self._apply_insertion(pos, size)
-            if event:
-                events.append(event)
-                if self.on_mutation:
-                    self.on_mutation(event)
-
-        # Apply deletions
-        for _ in range(n_deletions):
-            if self.state.size <= self.params.min_array_size:
-                break
-            pos = self.rng.integers(0, self.state.size)
-            size = max(1, self.rng.poisson(self.params.indel_size_lambda))
-            event = self._apply_deletion(pos, size)
-            if event:
-                events.append(event)
-                if self.on_mutation:
-                    self.on_mutation(event)
-
-        # Apply SNPs
         for _ in range(n_snps):
             if self.state.size == 0:
                 break
-            repeat_idx = self.rng.integers(0, self.state.size)
-            event = self._apply_snp(repeat_idx)
+
+            # Pick random base pair position
+            bp_pos = random.randint(0, len(self.state.seq) - 1)
+            old_base = self.state.seq[bp_pos]
+
+            # Choose a different base
+            new_base = random.choice([b for b in BASES if b != old_base])
+            self.state.seq[bp_pos] = new_base
+
+            event = MutationEvent(
+                generation=self.state.generation,
+                event_type='snp',
+                position=bp_pos,
+                size=1,
+                details=f"{old_base}->{new_base}"
+            )
             events.append(event)
+
             if self.on_mutation:
                 self.on_mutation(event)
 
-        # Update state
+        return events
+
+    def _apply_indels(self) -> List[MutationEvent]:
+        """Apply INDEL mutations (tandem duplications and deletions)."""
+        events = []
+        n_indels = np.random.poisson(self.params.indel_rate)
+        consecutive_failures = 0
+
+        count = 0
+        while count < n_indels:
+            if self.state.size == 0:
+                self.state.collapsed = True
+                break
+
+            # Choose duplication or deletion with equal probability
+            is_dup = random.choice([True, False])
+
+            # Sample size in number of repeat units
+            indel_size = max(1, int(np.random.poisson(self.params.indel_size_lambda)))
+
+            # Pick random starting position (in repeat units)
+            unit_start = random.randint(0, self.state.size - 1)
+            unit_end = unit_start + indel_size
+
+            # Bounds check
+            if unit_end > self.state.size:
+                consecutive_failures += 1
+                if consecutive_failures >= self.params.max_consecutive_failures:
+                    self.state.collapsed = True
+                    break
+                continue
+
+            # Check array size limits
+            if is_dup:
+                # Duplication would grow array
+                if self.params.bounding_enabled:
+                    if self.state.size + indel_size > self.params.max_array_size:
+                        consecutive_failures += 1
+                        continue
+
+                self.state.seq.duplicate_units(unit_start, unit_end)
+                event = MutationEvent(
+                    generation=self.state.generation,
+                    event_type='dup',
+                    position=unit_start,
+                    size=indel_size,
+                    details=f"units {unit_start}-{unit_end} duplicated"
+                )
+            else:
+                # Deletion would shrink array
+                if self.params.bounding_enabled:
+                    if self.state.size - indel_size < self.params.min_array_size:
+                        consecutive_failures += 1
+                        continue
+
+                self.state.seq.delete_units(unit_start, unit_end)
+                event = MutationEvent(
+                    generation=self.state.generation,
+                    event_type='del',
+                    position=unit_start,
+                    size=indel_size,
+                    details=f"units {unit_start}-{unit_end} deleted"
+                )
+
+            # Reset failure counter on success
+            consecutive_failures = 0
+            events.append(event)
+            count += 1
+
+            if self.on_mutation:
+                self.on_mutation(event)
+
+        # Check for collapse
+        if self.state.size < self.params.min_array_size:
+            self.state.collapsed = True
+
+        return events
+
+    def step(self) -> List[MutationEvent]:
+        """Advance the simulation by one generation."""
+        if self.state.collapsed:
+            return []
+
         self.state.generation += 1
+        events = []
+
+        # Apply SNPs
+        events.extend(self._apply_snp())
+
+        # Apply INDELs
+        events.extend(self._apply_indels())
+
+        # Record history
         self.state.history.extend(events)
 
         if self.on_generation:
@@ -229,39 +328,51 @@ class CentromereSimulator:
     def run(self, generations: int) -> SimulationState:
         """Run simulation for a number of generations."""
         for _ in range(generations):
+            if self.state.collapsed:
+                break
             self.step()
         return self.state
 
     def get_unique_sequences(self) -> List[str]:
         """Get list of unique sequences in current array."""
-        return list(set(self.state.repeats))
+        if not self.state.seq:
+            return []
+        return self.state.seq.get_unique_sequences()
 
     def get_statistics(self) -> dict:
         """Get current simulation statistics."""
         unique = self.get_unique_sequences()
+
+        # Count event types
+        snps = sum(1 for e in self.state.history if e.event_type == 'snp')
+        dups = sum(1 for e in self.state.history if e.event_type == 'dup')
+        dels = sum(1 for e in self.state.history if e.event_type == 'del')
+
         return {
             'generation': self.state.generation,
             'array_size': self.state.size,
             'unique_sequences': len(unique),
             'diversity': len(unique) / self.state.size if self.state.size > 0 else 0,
             'total_events': len(self.state.history),
-            'snps': sum(1 for e in self.state.history if e.event_type == 'snp'),
-            'insertions': sum(1 for e in self.state.history if e.event_type == 'insertion'),
-            'deletions': sum(1 for e in self.state.history if e.event_type == 'deletion'),
+            'snps': snps,
+            'duplications': dups,
+            'deletions': dels,
+            'collapsed': self.state.collapsed,
         }
 
 
 # Quick test
 if __name__ == "__main__":
     print("Testing CentromereSimulator...")
+    print(f"Default monomer: {len(DEFAULT_MONOMER)}bp")
 
     # Create simulator with smaller initial size for quick test
-    params = SimulationParams(initial_size=100)
+    params = SimulationParams(initial_size=1000)
     sim = CentromereSimulator(params, seed=42)
     sim.initialize()
 
     print(f"\nInitial state:")
-    print(f"  Array size: {sim.state.size}")
+    print(f"  Array size: {sim.state.size} repeats")
     print(f"  Unique sequences: {len(sim.get_unique_sequences())}")
 
     # Run for 100 generations
@@ -271,9 +382,12 @@ if __name__ == "__main__":
     stats = sim.get_statistics()
     print(f"\nFinal state:")
     for key, value in stats.items():
-        print(f"  {key}: {value}")
+        if isinstance(value, float):
+            print(f"  {key}: {value:.4f}")
+        else:
+            print(f"  {key}: {value}")
 
     # Show some history
-    print(f"\nLast 5 events:")
-    for event in sim.state.history[-5:]:
-        print(f"  Gen {event.generation}: {event.event_type} at pos {event.position} (size {event.size})")
+    print(f"\nLast 10 events:")
+    for event in sim.state.history[-10:]:
+        print(f"  Gen {event.generation}: {event.event_type} at {event.position} (size {event.size}) {event.details}")
