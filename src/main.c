@@ -15,13 +15,13 @@
 // Grid rendering
 // ============================================================================
 
-static void draw_grid(Simulation *sim, Colorizer *colorizer, int offset_x, int offset_y) {
+static void draw_grid(Simulation *sim, Colorizer *colorizer, int offset_x, int offset_y, int grid_width) {
     int num_units = sim->array.num_units;
     if (num_units == 0) return;
 
     for (int i = 0; i < num_units; i++) {
-        int row = i / GRID_WIDTH;
-        int col = i % GRID_WIDTH;
+        int row = i / grid_width;
+        int col = i % grid_width;
 
         Color c = colorizer_get_color(colorizer, sim->array.units[i]);
 
@@ -95,6 +95,14 @@ int main(void) {
     // Start in fullscreen
     ToggleFullscreen();
 
+    // Calculate grid width to fit horizontally (do this once after fullscreen)
+    // Need one frame to get correct screen dimensions
+    BeginDrawing();
+    EndDrawing();
+    int grid_width = (GetScreenWidth() - PANEL_WIDTH - 20) / TILE_SIZE;
+    if (grid_width < 10) grid_width = 10;
+    printf("Grid width: %d tiles\n", grid_width);
+
     // Initialize simulation
     Simulation sim;
     sim_init(&sim, DEFAULT_INITIAL_SIZE);
@@ -148,7 +156,7 @@ int main(void) {
         ClearBackground((Color){30, 30, 35, 255});
 
         // Draw grid
-        draw_grid(&sim, &colorizer, 10, 10);
+        draw_grid(&sim, &colorizer, 10, 10, grid_width);
 
         // Draw panel background
         DrawRectangle(panel_x, 0, PANEL_WIDTH, screen_height, (Color){25, 25, 30, 255});
