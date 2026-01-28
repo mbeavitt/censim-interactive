@@ -92,16 +92,11 @@ int main(void) {
     InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Centromere Evolution Simulator");
     SetTargetFPS(60);
 
-    // Start in fullscreen
-    ToggleFullscreen();
-
-    // Calculate grid width to fit horizontally (do this once after fullscreen)
-    // Need one frame to get correct screen dimensions
-    BeginDrawing();
-    EndDrawing();
+    // Calculate initial grid width
     int grid_width = (GetScreenWidth() - PANEL_WIDTH - 20) / TILE_SIZE;
     if (grid_width < 10) grid_width = 10;
     printf("Grid width: %d tiles\n", grid_width);
+    int last_screen_width = GetScreenWidth();
 
     // Initialize simulation
     Simulation sim;
@@ -138,6 +133,14 @@ int main(void) {
         int screen_width = GetScreenWidth();
         int screen_height = GetScreenHeight();
         int panel_x = screen_width - PANEL_WIDTH;
+
+        // Recalculate grid width if screen size changed (fullscreen toggle)
+        if (screen_width != last_screen_width) {
+            grid_width = (screen_width - PANEL_WIDTH - 20) / TILE_SIZE;
+            if (grid_width < 10) grid_width = 10;
+            last_screen_width = screen_width;
+            printf("Grid width changed: %d tiles\n", grid_width);
+        }
 
         // Update simulation
         if (running && !sim.stats.collapsed) {
@@ -193,46 +196,75 @@ int main(void) {
         int slider_w = 260;
         int slider_h = 20;
         int label_w = 100;
+        int row_h = 35;
+        Vector2 mouse = GetMousePosition();
+        const char *hover_text = NULL;
+        Rectangle hover_rect = {0};
 
         // INDEL rate
+        Rectangle indel_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h};
         DrawText("INDEL rate:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
         GuiSlider(
             (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
             NULL, TextFormat("%.2f", sim.params.indel_rate),
             &sim.params.indel_rate, 0.0f, 3.0f);
-        btn_y += 35;
+        if (CheckCollisionPointRec(mouse, indel_row)) {
+            hover_text = "Expected INDELs per generation (Poisson lambda)";
+            hover_rect = indel_row;
+        }
+        btn_y += row_h;
 
         // INDEL size
+        Rectangle size_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h};
         DrawText("INDEL size:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
         GuiSlider(
             (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
             NULL, TextFormat("%.1f", sim.params.indel_size_lambda),
             &sim.params.indel_size_lambda, 1.0f, 30.0f);
-        btn_y += 35;
+        if (CheckCollisionPointRec(mouse, size_row)) {
+            hover_text = "Expected repeat units per INDEL (Poisson lambda)";
+            hover_rect = size_row;
+        }
+        btn_y += row_h;
 
         // SNP rate
+        Rectangle snp_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h};
         DrawText("SNP rate:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
         GuiSlider(
             (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
             NULL, TextFormat("%.2f", sim.params.snp_rate),
             &sim.params.snp_rate, 0.0f, 1.0f);
-        btn_y += 35;
+        if (CheckCollisionPointRec(mouse, snp_row)) {
+            hover_text = "Expected SNPs per generation (Poisson lambda)";
+            hover_rect = snp_row;
+        }
+        btn_y += row_h;
 
         // Gens per frame
+        Rectangle gpf_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h + 10};
         DrawText("Gens/frame:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
         GuiSlider(
             (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
             NULL, TextFormat("%d", (int)gens_per_frame),
             &gens_per_frame, 10.0f, 100000.0f);
-        btn_y += 45;
+        if (CheckCollisionPointRec(mouse, gpf_row)) {
+            hover_text = "Generations simulated per frame (speed control)";
+            hover_rect = gpf_row;
+        }
+        btn_y += row_h + 10;
 
         // Elasticity
+        Rectangle elast_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h + 10};
         DrawText("Elasticity:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
         GuiSlider(
             (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
             NULL, TextFormat("%.2f", sim.params.elasticity),
             &sim.params.elasticity, 0.0f, 1.0f);
-        btn_y += 45;
+        if (CheckCollisionPointRec(mouse, elast_row)) {
+            hover_text = "Pull strength toward target size (10K repeats)";
+            hover_rect = elast_row;
+        }
+        btn_y += row_h + 10;
 
         // Bounding checkbox
         GuiCheckBox((Rectangle){panel_x + 20, btn_y, 20, 20}, "Hard bounds", &sim.params.bounding_enabled);
@@ -243,6 +275,18 @@ int main(void) {
 
         // FPS counter
         DrawFPS(screen_width - 100, 10);
+
+        // Draw hover tooltip
+        if (hover_text) {
+            int text_width = MeasureText(hover_text, 14);
+            int tip_x = (int)mouse.x + 15;
+            int tip_y = (int)mouse.y - 25;
+            if (tip_x + text_width + 10 > screen_width) tip_x = screen_width - text_width - 15;
+            if (tip_y < 5) tip_y = (int)mouse.y + 20;
+            DrawRectangle(tip_x - 5, tip_y - 3, text_width + 10, 20, (Color){50, 50, 55, 240});
+            DrawRectangleLines(tip_x - 5, tip_y - 3, text_width + 10, 20, GRAY);
+            DrawText(hover_text, tip_x, tip_y, 14, WHITE);
+        }
 
         EndDrawing();
     }
