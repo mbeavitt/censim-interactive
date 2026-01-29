@@ -92,11 +92,22 @@ int main(void) {
     InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Centromere Evolution Simulator");
     SetTargetFPS(60);
 
-    // Calculate initial grid width
-    int grid_width = (GetScreenWidth() - PANEL_WIDTH - 20) / TILE_SIZE;
+    // Start maximized
+    MaximizeWindow();
+
+    // Wait for window to settle and use monitor size for initial calculation
+    for (int i = 0; i < 5; i++) {
+        BeginDrawing();
+        ClearBackground(BLACK);
+        EndDrawing();
+    }
+
+    // Get actual screen dimensions after maximize
+    int screen_w = GetScreenWidth();
+    int grid_width = (screen_w - PANEL_WIDTH - 20) / TILE_SIZE;
     if (grid_width < 10) grid_width = 10;
-    printf("Grid width: %d tiles\n", grid_width);
-    int last_screen_width = GetScreenWidth();
+    printf("Grid width: %d tiles (screen: %d)\n", grid_width, screen_w);
+    int last_screen_width = screen_w;
 
     // Initialize simulation
     Simulation sim;
@@ -124,9 +135,13 @@ int main(void) {
 
     // Main loop
     while (!WindowShouldClose()) {
-        // Toggle fullscreen with F11
+        // Toggle maximize with F11
         if (IsKeyPressed(KEY_F11) || IsKeyPressed(KEY_F)) {
-            ToggleFullscreen();
+            if (IsWindowMaximized()) {
+                RestoreWindow();
+            } else {
+                MaximizeWindow();
+            }
         }
 
         // Get current screen dimensions
@@ -134,8 +149,8 @@ int main(void) {
         int screen_height = GetScreenHeight();
         int panel_x = screen_width - PANEL_WIDTH;
 
-        // Recalculate grid width if screen size changed (fullscreen toggle)
-        if (screen_width != last_screen_width) {
+        // Recalculate grid width if screen size changed significantly (>100px)
+        if (abs(screen_width - last_screen_width) > 100) {
             grid_width = (screen_width - PANEL_WIDTH - 20) / TILE_SIZE;
             if (grid_width < 10) grid_width = 10;
             last_screen_width = screen_width;
@@ -166,7 +181,7 @@ int main(void) {
 
         // Title
         DrawText("Controls", panel_x + 20, 20, 24, WHITE);
-        DrawText("(F11 toggle fullscreen)", panel_x + 20, 48, 12, GRAY);
+        DrawText("(F11 toggle maximize)", panel_x + 20, 48, 12, GRAY);
 
         // Buttons
         int btn_y = 75;
@@ -186,6 +201,32 @@ int main(void) {
 
         if (GuiButton((Rectangle){panel_x + 20, btn_y, 180, btn_h}, "#79#Step 1000")) {
             sim_run(&sim, 1000);
+        }
+        if (GuiButton((Rectangle){panel_x + 210, btn_y, 180, btn_h}, "#07#Export FASTA")) {
+            // Use macOS native save dialog via osascript
+            char cmd[512];
+            snprintf(cmd, sizeof(cmd),
+                "osascript -e 'POSIX path of (choose file name with prompt \"Save FASTA as:\" default name \"censim_gen%d.fasta\")' 2>/dev/null",
+                sim.stats.generation);
+            FILE *pipe = popen(cmd, "r");
+            if (pipe) {
+                char filepath[1024] = {0};
+                if (fgets(filepath, sizeof(filepath), pipe)) {
+                    // Remove trailing newline
+                    filepath[strcspn(filepath, "\n")] = 0;
+                    if (strlen(filepath) > 0) {
+                        FILE *f = fopen(filepath, "w");
+                        if (f) {
+                            for (int i = 0; i < sim.array.num_units; i++) {
+                                fprintf(f, ">repeat_%d\n%s\n", i + 1, sim.array.units[i]);
+                            }
+                            fclose(f);
+                            printf("Exported %d repeats to %s\n", sim.array.num_units, filepath);
+                        }
+                    }
+                }
+                pclose(pipe);
+            }
         }
         btn_y += btn_spacing + 20;
 
@@ -220,7 +261,7 @@ int main(void) {
         GuiSlider(
             (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
             NULL, TextFormat("%.1f", sim.params.indel_size_lambda),
-            &sim.params.indel_size_lambda, 1.0f, 30.0f);
+            &sim.params.indel_size_lambda, 1.0f, 100.0f);
         if (CheckCollisionPointRec(mouse, size_row)) {
             hover_text = "Expected repeat units per INDEL (Poisson lambda)";
             hover_rect = size_row;
@@ -253,6 +294,21 @@ int main(void) {
         }
         btn_y += row_h + 10;
 
+        // Target size
+        Rectangle target_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h};
+        DrawText("Target size:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
+        float target_f = (float)sim.params.target_size;
+        GuiSlider(
+            (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
+            NULL, TextFormat("%d", sim.params.target_size),
+            &target_f, 1000.0f, 50000.0f);
+        sim.params.target_size = (int)target_f;
+        if (CheckCollisionPointRec(mouse, target_row)) {
+            hover_text = "Target array size for elastic bounding";
+            hover_rect = target_row;
+        }
+        btn_y += row_h;
+
         // Elasticity
         Rectangle elast_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h + 10};
         DrawText("Elasticity:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
@@ -261,7 +317,7 @@ int main(void) {
             NULL, TextFormat("%.2f", sim.params.elasticity),
             &sim.params.elasticity, 0.0f, 1.0f);
         if (CheckCollisionPointRec(mouse, elast_row)) {
-            hover_text = "Pull strength toward target size (10K repeats)";
+            hover_text = "Pull strength toward target size";
             hover_rect = elast_row;
         }
         btn_y += row_h + 10;
