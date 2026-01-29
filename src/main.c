@@ -87,27 +87,26 @@ static void draw_stats(Simulation *sim, int x, int y) {
 // ============================================================================
 
 int main(void) {
-    // Initialize window
+    // Initialize window at a safe small size first
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-    InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Centromere Evolution Simulator");
+    InitWindow(800, 600, "Centromere Evolution Simulator");
     SetTargetFPS(60);
 
-    // Start maximized
+    // Get monitor dimensions
+    int monitor = GetCurrentMonitor();
+    int monitor_w = GetMonitorWidth(monitor);
+    int monitor_h = GetMonitorHeight(monitor);
+    printf("Monitor: %d, size: %dx%d\n", monitor, monitor_w, monitor_h);
+
+    // Resize window to fit monitor and maximize
+    SetWindowSize(monitor_w, monitor_h);
     MaximizeWindow();
 
-    // Wait for window to settle and use monitor size for initial calculation
-    for (int i = 0; i < 5; i++) {
-        BeginDrawing();
-        ClearBackground(BLACK);
-        EndDrawing();
-    }
-
-    // Get actual screen dimensions after maximize
-    int screen_w = GetScreenWidth();
-    int grid_width = (screen_w - PANEL_WIDTH - 20) / TILE_SIZE;
+    // Calculate grid based on monitor width
+    int grid_width = (monitor_w - PANEL_WIDTH - 40) / TILE_SIZE;  // Extra margin
     if (grid_width < 10) grid_width = 10;
-    printf("Grid width: %d tiles (screen: %d)\n", grid_width, screen_w);
-    int last_screen_width = screen_w;
+    printf("Grid width: %d tiles\n", grid_width);
+    int last_screen_width = monitor_w;
 
     // Initialize simulation
     Simulation sim;
@@ -135,8 +134,13 @@ int main(void) {
 
     // Main loop
     while (!WindowShouldClose()) {
-        // Toggle maximize with F11
-        if (IsKeyPressed(KEY_F11) || IsKeyPressed(KEY_F)) {
+        // Toggle maximize: Cmd+F on macOS, F11 on Windows/Linux
+#ifdef __APPLE__
+        bool toggle_maximize = (IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER)) && IsKeyPressed(KEY_F);
+#else
+        bool toggle_maximize = IsKeyPressed(KEY_F11);
+#endif
+        if (toggle_maximize) {
             if (IsWindowMaximized()) {
                 RestoreWindow();
             } else {
@@ -181,7 +185,11 @@ int main(void) {
 
         // Title
         DrawText("Controls", panel_x + 20, 20, 24, WHITE);
+#ifdef __APPLE__
+        DrawText("(Cmd+F toggle maximize)", panel_x + 20, 48, 12, GRAY);
+#else
         DrawText("(F11 toggle maximize)", panel_x + 20, 48, 12, GRAY);
+#endif
 
         // Buttons
         int btn_y = 75;
