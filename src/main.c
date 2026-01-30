@@ -124,6 +124,7 @@ int main(void) {
     char step_size_text[16] = "10000";
     bool step_size_edit = false;
     int refresh_counter = 0;
+    float panel_scroll = 0.0f;  // Scroll offset for controls panel
 
     // raygui style
     GuiSetStyle(DEFAULT, TEXT_SIZE, 16);
@@ -187,16 +188,34 @@ int main(void) {
         // Draw panel background
         DrawRectangle(panel_x, 0, PANEL_WIDTH, screen_height, (Color){25, 25, 30, 255});
 
-        // Title
+        // Handle scrolling when mouse is over panel
+        Rectangle panel_rect = {panel_x, 0, PANEL_WIDTH, screen_height};
+        Vector2 mouse = GetMousePosition();
+        if (CheckCollisionPointRec(mouse, panel_rect)) {
+            float wheel = GetMouseWheelMove();
+            panel_scroll += wheel * 30.0f;
+            if (panel_scroll > 0) panel_scroll = 0;  // Can't scroll up past top
+        }
+
+        // Begin scissor mode for panel clipping
+        BeginScissorMode(panel_x, 0, PANEL_WIDTH, screen_height);
+
+        // Apply scroll offset to all controls
+        int scroll_y = (int)panel_scroll;
+
+        // Title (fixed, doesn't scroll)
+        EndScissorMode();
+        DrawRectangle(panel_x, 0, PANEL_WIDTH, 65, (Color){25, 25, 30, 255});
         DrawText("Controls", panel_x + 20, 20, 24, WHITE);
 #ifdef __APPLE__
         DrawText("(Cmd+F toggle maximize)", panel_x + 20, 48, 12, GRAY);
 #else
         DrawText("(F11 toggle maximize)", panel_x + 20, 48, 12, GRAY);
 #endif
+        BeginScissorMode(panel_x, 65, PANEL_WIDTH, screen_height - 65);
 
         // Buttons
-        int btn_y = 75;
+        int btn_y = 75 + scroll_y;
         int btn_h = 40;
         int btn_spacing = 50;
 
@@ -250,7 +269,6 @@ int main(void) {
         int slider_h = 20;
         int label_w = 100;
         int row_h = 35;
-        Vector2 mouse = GetMousePosition();
         const char *hover_text = NULL;
         Rectangle hover_rect = {0};
 
@@ -388,7 +406,7 @@ int main(void) {
         btn_y += 30;
 
         if (show_advanced) {
-            DrawRectangle(panel_x + 10, btn_y, PANEL_WIDTH - 20, 60, (Color){40, 40, 40, 200});
+            DrawRectangle(panel_x + 10, btn_y, PANEL_WIDTH - 20, 100, (Color){40, 40, 40, 200});
 
             DrawText("Step size:", panel_x + 20, btn_y + 8, 16, LIGHTGRAY);
             if (GuiTextBox((Rectangle){panel_x + 120, btn_y + 5, 120, 25},
@@ -400,8 +418,25 @@ int main(void) {
                 if (val > 0) step_size = val;
             }
 
-            btn_y += 65;
+            // Dup/Del bias slider
+            DrawText("Dup/Del bias:", panel_x + 20, btn_y + 45, 16, LIGHTGRAY);
+            GuiSlider(
+                (Rectangle){panel_x + 140, btn_y + 43, 200, 20},
+                "Del", "Dup",
+                &sim.params.dup_bias, 0.0f, 1.0f);
+            DrawText(TextFormat("%.0f%%", sim.params.dup_bias * 100), panel_x + 350, btn_y + 45, 14, WHITE);
+
+            btn_y += 105;
         }
+
+        // Track max scroll based on content height
+        int content_bottom = btn_y - scroll_y;
+        float max_scroll = -(content_bottom - screen_height + 20);
+        if (max_scroll > 0) max_scroll = 0;
+        if (panel_scroll < max_scroll) panel_scroll = max_scroll;
+
+        // End scissor mode before drawing overlays
+        EndScissorMode();
 
         // FPS counter
         DrawFPS(screen_width - 100, 10);

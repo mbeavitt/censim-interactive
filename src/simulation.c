@@ -156,17 +156,18 @@ static void apply_indels(Simulation *sim) {
             return;
         }
 
-        // Elastic bounding: bias dup/del probability based on distance from target
-        float dup_prob = 0.5f;
+        // Start with base dup/del bias
+        float dup_prob = sim->params.dup_bias;
+
+        // Elastic bounding: further bias based on distance from target
         if (sim->params.elasticity > 0.0f) {
             // How far are we from target? Positive = too big, negative = too small
             float deviation = (float)(sim->array.num_units - sim->params.target_size)
                             / (float)sim->params.target_size;
             // Bias: when too big, reduce dup probability; when too small, increase it
-            // dup_prob = 0.5 - elasticity * deviation (clamped to [0.1, 0.9])
-            dup_prob = 0.5f - sim->params.elasticity * deviation;
-            if (dup_prob < 0.1f) dup_prob = 0.1f;
-            if (dup_prob > 0.9f) dup_prob = 0.9f;
+            dup_prob = dup_prob - sim->params.elasticity * deviation;
+            if (dup_prob < 0.05f) dup_prob = 0.05f;
+            if (dup_prob > 0.95f) dup_prob = 0.95f;
         }
 
         // Choose duplication or deletion based on biased probability
@@ -235,6 +236,7 @@ void sim_init(Simulation *sim, int initial_size) {
     sim->params.bounding_enabled = true;
     sim->params.target_size = DEFAULT_TARGET_SIZE;
     sim->params.elasticity = DEFAULT_ELASTICITY;
+    sim->params.dup_bias = 0.5f;  // Equal dup/del by default
 
     // Reset stats
     sim->stats.generation = 0;

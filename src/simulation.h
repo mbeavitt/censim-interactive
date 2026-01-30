@@ -27,6 +27,7 @@ struct SimParams {
     // Elastic bounding
     int target_size;
     float elasticity;  // 0 = no effect, higher = stronger pull toward target
+    float dup_bias;    // 0 = all deletions, 0.5 = equal, 1 = all duplications
 };
 
 // Statistics
