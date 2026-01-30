@@ -276,7 +276,7 @@ int main(void) {
         DrawText("Parameters", panel_x + 20, btn_y, 20, WHITE);
         btn_y += 30;
 
-        int slider_w = 260;
+        int slider_w = 230;  // Leave room for value text on right
         int slider_h = 20;
         int label_w = 100;
         int row_h = 35;
