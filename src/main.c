@@ -119,7 +119,10 @@ int main(void) {
     // UI state
     bool running = false;
     float gens_per_frame = 100.0f;
-    float step_size = 10000.0f;
+    int step_size = 10000;
+    bool show_advanced = false;
+    char step_size_text[16] = "10000";
+    bool step_size_edit = false;
     int refresh_counter = 0;
 
     // raygui style
@@ -208,13 +211,9 @@ int main(void) {
         }
         btn_y += btn_spacing;
 
-        if (GuiButton((Rectangle){panel_x + 20, btn_y, 100, btn_h}, "#79#Step")) {
-            sim_run(&sim, (int)step_size);
+        if (GuiButton((Rectangle){panel_x + 20, btn_y, 180, btn_h}, TextFormat("#79#Step %d", step_size))) {
+            sim_run(&sim, step_size);
         }
-        GuiSlider(
-            (Rectangle){panel_x + 130, btn_y + 10, 160, 20},
-            NULL, TextFormat("%d", (int)step_size),
-            &step_size, 100.0f, 100000.0f);
         if (GuiButton((Rectangle){panel_x + 210, btn_y, 180, btn_h}, "#07#Export FASTA")) {
             // Use macOS native save dialog via osascript
             char cmd[512];
@@ -379,6 +378,30 @@ int main(void) {
 
         // Stats panel
         draw_stats(&sim, panel_x + 10, btn_y);
+        btn_y += 210;
+
+        // Advanced options (collapsible)
+        if (GuiButton((Rectangle){panel_x + 20, btn_y, 370, 25},
+                      show_advanced ? "#120#Advanced Options" : "#119#Advanced Options")) {
+            show_advanced = !show_advanced;
+        }
+        btn_y += 30;
+
+        if (show_advanced) {
+            DrawRectangle(panel_x + 10, btn_y, PANEL_WIDTH - 20, 60, (Color){40, 40, 40, 200});
+
+            DrawText("Step size:", panel_x + 20, btn_y + 8, 16, LIGHTGRAY);
+            if (GuiTextBox((Rectangle){panel_x + 120, btn_y + 5, 120, 25},
+                          step_size_text, 16, step_size_edit)) {
+                step_size_edit = !step_size_edit;
+            }
+            if (!step_size_edit) {
+                int val = atoi(step_size_text);
+                if (val > 0) step_size = val;
+            }
+
+            btn_y += 65;
+        }
 
         // FPS counter
         DrawFPS(screen_width - 100, 10);
