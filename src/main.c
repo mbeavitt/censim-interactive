@@ -36,7 +36,7 @@ static void draw_grid(Simulation *sim, Colorizer *colorizer, int offset_x, int o
 // Stats panel
 // ============================================================================
 
-static void draw_stats(Simulation *sim, int x, int y) {
+static void draw_stats(Simulation *sim, int x, int y, bool running) {
     int unique = sim_count_unique(sim);
     float diversity = (sim->array.num_units > 0)
         ? (float)unique / (float)sim->array.num_units
@@ -44,8 +44,8 @@ static void draw_stats(Simulation *sim, int x, int y) {
 
     char buf[256];
 
-    DrawRectangle(x, y, PANEL_WIDTH - 20, 200, (Color){40, 40, 40, 220});
-    DrawRectangleLines(x, y, PANEL_WIDTH - 20, 200, LIGHTGRAY);
+    DrawRectangle(x, y, PANEL_WIDTH - 20, 215, (Color){40, 40, 40, 220});
+    DrawRectangleLines(x, y, PANEL_WIDTH - 20, 215, LIGHTGRAY);
 
     int line = y + 15;
     int spacing = 22;
@@ -77,8 +77,13 @@ static void draw_stats(Simulation *sim, int x, int y) {
     DrawText(buf, x + 10, line, 16, RAYWHITE);
     line += spacing;
 
+    // Status indicator
     if (sim->stats.collapsed) {
         DrawText("COLLAPSED!", x + 10, line, 18, RED);
+    } else if (running) {
+        DrawText("RUNNING", x + 10, line, 18, GREEN);
+    } else {
+        DrawText("PAUSED", x + 10, line, 18, GRAY);
     }
 }
 
@@ -402,7 +407,7 @@ int main(void) {
         btn_y += btn_spacing;
 
         // Stats panel
-        draw_stats(&sim, panel_x + 10, btn_y);
+        draw_stats(&sim, panel_x + 10, btn_y, running);
         btn_y += 210;
 
         // Advanced options (collapsible)
