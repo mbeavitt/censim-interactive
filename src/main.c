@@ -193,8 +193,8 @@ int main(void) {
         Vector2 mouse = GetMousePosition();
 
         // Calculate content height (approximate based on controls)
-        int content_height = 800;  // Base height
-        if (show_advanced) content_height += 110;
+        int content_height = 760;  // Base height (reduced since checkbox moved)
+        if (show_advanced) content_height += 140;
 
         // Max scroll is negative (scrolling down moves content up)
         float max_scroll = -(content_height - screen_height + 80);
@@ -363,10 +363,6 @@ int main(void) {
         }
         btn_y += row_h + 10;
 
-        // Bounding checkbox
-        GuiCheckBox((Rectangle){panel_x + 20, btn_y, 20, 20}, "Hard bounds", &sim.params.bounding_enabled);
-        btn_y += 40;
-
         // UMAP Visualization button
         if (GuiButton((Rectangle){panel_x + 20, btn_y, 370, btn_h}, "#27#UMAP Visualization (slow)")) {
             // Get output path via save dialog
@@ -417,7 +413,7 @@ int main(void) {
         btn_y += 30;
 
         if (show_advanced) {
-            DrawRectangle(panel_x + 10, btn_y, PANEL_WIDTH - 20, 100, (Color){40, 40, 40, 200});
+            DrawRectangle(panel_x + 10, btn_y, PANEL_WIDTH - 20, 130, (Color){40, 40, 40, 200});
 
             DrawText("Step size:", panel_x + 20, btn_y + 8, 16, LIGHTGRAY);
             if (GuiTextBox((Rectangle){panel_x + 120, btn_y + 5, 120, 25},
@@ -437,7 +433,10 @@ int main(void) {
                 &sim.params.dup_bias, 0.0f, 1.0f);
             DrawText(TextFormat("%.0f%% dup", sim.params.dup_bias * 100), panel_x + 350, btn_y + 45, 14, WHITE);
 
-            btn_y += 105;
+            // Hard bounds checkbox
+            GuiCheckBox((Rectangle){panel_x + 20, btn_y + 80, 20, 20}, "Hard bounds (min/max array size)", &sim.params.bounding_enabled);
+
+            btn_y += 135;
         }
 
         // End scissor mode before drawing overlays
