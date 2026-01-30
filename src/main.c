@@ -191,10 +191,21 @@ int main(void) {
         // Handle scrolling when mouse is over panel
         Rectangle panel_rect = {panel_x, 0, PANEL_WIDTH, screen_height};
         Vector2 mouse = GetMousePosition();
+
+        // Calculate content height (approximate based on controls)
+        int content_height = 800;  // Base height
+        if (show_advanced) content_height += 110;
+
+        // Max scroll is negative (scrolling down moves content up)
+        float max_scroll = -(content_height - screen_height + 80);
+        if (max_scroll > 0) max_scroll = 0;
+
         if (CheckCollisionPointRec(mouse, panel_rect)) {
             float wheel = GetMouseWheelMove();
             panel_scroll += wheel * 30.0f;
-            if (panel_scroll > 0) panel_scroll = 0;  // Can't scroll up past top
+            // Clamp scroll
+            if (panel_scroll > 0) panel_scroll = 0;
+            if (panel_scroll < max_scroll) panel_scroll = max_scroll;
         }
 
         // Begin scissor mode for panel clipping
@@ -422,18 +433,12 @@ int main(void) {
             DrawText("Dup/Del bias:", panel_x + 20, btn_y + 45, 16, LIGHTGRAY);
             GuiSlider(
                 (Rectangle){panel_x + 140, btn_y + 43, 200, 20},
-                "Del", "Dup",
+                NULL, NULL,
                 &sim.params.dup_bias, 0.0f, 1.0f);
-            DrawText(TextFormat("%.0f%%", sim.params.dup_bias * 100), panel_x + 350, btn_y + 45, 14, WHITE);
+            DrawText(TextFormat("%.0f%% dup", sim.params.dup_bias * 100), panel_x + 350, btn_y + 45, 14, WHITE);
 
             btn_y += 105;
         }
-
-        // Track max scroll based on content height
-        int content_bottom = btn_y - scroll_y;
-        float max_scroll = -(content_bottom - screen_height + 20);
-        if (max_scroll > 0) max_scroll = 0;
-        if (panel_scroll < max_scroll) panel_scroll = max_scroll;
 
         // End scissor mode before drawing overlays
         EndScissorMode();
