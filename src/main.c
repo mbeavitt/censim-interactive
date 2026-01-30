@@ -408,7 +408,7 @@ int main(void) {
 
         // Stats panel
         draw_stats(&sim, panel_x + 10, btn_y, running);
-        btn_y += 210;
+        btn_y += 225;
 
         // Advanced options (collapsible)
         if (GuiButton((Rectangle){panel_x + 20, btn_y, 370, 25},
