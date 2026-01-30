@@ -332,7 +332,45 @@ int main(void) {
 
         // Bounding checkbox
         GuiCheckBox((Rectangle){panel_x + 20, btn_y, 20, 20}, "Hard bounds", &sim.params.bounding_enabled);
-        btn_y += 50;
+        btn_y += 40;
+
+        // UMAP Visualization button
+        if (GuiButton((Rectangle){panel_x + 20, btn_y, 370, btn_h}, "#27#UMAP Visualization (slow)")) {
+            // Get output path via save dialog
+            char cmd[512];
+            snprintf(cmd, sizeof(cmd),
+                "osascript -e 'POSIX path of (choose file name with prompt \"Save UMAP visualization as:\" default name \"umap_gen%d.png\")' 2>/dev/null",
+                sim.stats.generation);
+            FILE *pipe = popen(cmd, "r");
+            if (pipe) {
+                char outpath[1024] = {0};
+                if (fgets(outpath, sizeof(outpath), pipe)) {
+                    outpath[strcspn(outpath, "\n")] = 0;
+                    if (strlen(outpath) > 0) {
+                        // Write temp FASTA
+                        char tempfasta[256];
+                        snprintf(tempfasta, sizeof(tempfasta), "/tmp/censim_temp_%d.fasta", sim.stats.generation);
+                        FILE *f = fopen(tempfasta, "w");
+                        if (f) {
+                            for (int i = 0; i < sim.array.num_units; i++) {
+                                fprintf(f, ">repeat_%d\n%s\n", i + 1, sim.array.units[i]);
+                            }
+                            fclose(f);
+
+                            // Get script path (relative to executable)
+                            char script_cmd[2048];
+                            snprintf(script_cmd, sizeof(script_cmd),
+                                "python3 \"%s/../../scripts/visualize_umap.py\" \"%s\" -o \"%s\" -w %d &",
+                                GetApplicationDirectory(), tempfasta, outpath, grid_width);
+                            printf("Running: %s\n", script_cmd);
+                            system(script_cmd);
+                        }
+                    }
+                }
+                pclose(pipe);
+            }
+        }
+        btn_y += btn_spacing;
 
         // Stats panel
         draw_stats(&sim, panel_x + 10, btn_y);

@@ -1,0 +1,5 @@
+umap-learn
+python-Levenshtein
+scikit-learn
+matplotlib
+numpy
