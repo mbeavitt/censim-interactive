@@ -119,6 +119,7 @@ int main(void) {
     // UI state
     bool running = false;
     float gens_per_frame = 100.0f;
+    float step_size = 10000.0f;
     int refresh_counter = 0;
 
     // raygui style
@@ -207,9 +208,13 @@ int main(void) {
         }
         btn_y += btn_spacing;
 
-        if (GuiButton((Rectangle){panel_x + 20, btn_y, 180, btn_h}, "#79#Step 1000")) {
-            sim_run(&sim, 1000);
+        if (GuiButton((Rectangle){panel_x + 20, btn_y, 100, btn_h}, "#79#Step")) {
+            sim_run(&sim, (int)step_size);
         }
+        GuiSlider(
+            (Rectangle){panel_x + 130, btn_y + 10, 160, 20},
+            NULL, TextFormat("%d", (int)step_size),
+            &step_size, 100.0f, 100000.0f);
         if (GuiButton((Rectangle){panel_x + 210, btn_y, 180, btn_h}, "#07#Export FASTA")) {
             // Use macOS native save dialog via osascript
             char cmd[512];
