@@ -4,6 +4,30 @@
 
 #include <raylib.h>
 
+// ============================================================================
+// Resource path helpers (for app bundle support)
+// ============================================================================
+
+// Get the path to the visualize_umap executable/script
+// In app bundle: uses CENSIM_RESOURCES env var pointing to bundled PyInstaller binary
+// In dev mode: uses python3 with script relative to executable
+static void get_umap_command(char *cmd, size_t cmd_size, const char *fasta_path,
+                             const char *output_path, int grid_width) {
+    const char *resources = getenv("CENSIM_RESOURCES");
+
+    if (resources && strlen(resources) > 0) {
+        // App bundle mode: use bundled PyInstaller executable
+        snprintf(cmd, cmd_size,
+            "\"%s/visualize_umap/visualize_umap\" \"%s\" -o \"%s\" -w %d &",
+            resources, fasta_path, output_path, grid_width);
+    } else {
+        // Development mode: use python3 with script
+        snprintf(cmd, cmd_size,
+            "python3 \"%s/../../scripts/visualize_umap.py\" \"%s\" -o \"%s\" -w %d &",
+            GetApplicationDirectory(), fasta_path, output_path, grid_width);
+    }
+}
+
 #define RAYGUI_IMPLEMENTATION
 #include "raygui.h"
 
@@ -391,11 +415,9 @@ int main(void) {
                             }
                             fclose(f);
 
-                            // Get script path (relative to executable)
+                            // Build and run visualization command
                             char script_cmd[2048];
-                            snprintf(script_cmd, sizeof(script_cmd),
-                                "python3 \"%s/../../scripts/visualize_umap.py\" \"%s\" -o \"%s\" -w %d &",
-                                GetApplicationDirectory(), tempfasta, outpath, grid_width);
+                            get_umap_command(script_cmd, sizeof(script_cmd), tempfasta, outpath, grid_width);
                             printf("Running: %s\n", script_cmd);
                             system(script_cmd);
                         }
