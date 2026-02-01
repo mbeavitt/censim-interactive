@@ -154,6 +154,8 @@ int main(void) {
     bool step_size_edit = false;
     int refresh_counter = 0;
     float panel_scroll = 0.0f;  // Scroll offset for controls panel
+    bool count_dist_edit = false;  // Dropdown state
+    bool size_dist_edit = false;   // Dropdown state
 
     // raygui style
     GuiSetStyle(DEFAULT, TEXT_SIZE, 16);
@@ -223,7 +225,11 @@ int main(void) {
 
         // Calculate content height (approximate based on controls)
         int content_height = 760;  // Base height (reduced since checkbox moved)
-        if (show_advanced) content_height += 140;
+        if (show_advanced) {
+            content_height += 170;
+            if (sim.params.count_dist == DIST_NEGATIVE_BINOMIAL) content_height += 26;
+            if (sim.params.size_dist == SIZE_POWER_LAW) content_height += 26;
+        }
 
         // Max scroll is negative (scrolling down moves content up)
         float max_scroll = -(content_height - screen_height + 80);
@@ -440,10 +446,18 @@ int main(void) {
         btn_y += 30;
 
         if (show_advanced) {
-            DrawRectangle(panel_x + 10, btn_y, PANEL_WIDTH - 20, 130, (Color){40, 40, 40, 200});
+            // Calculate dynamic height based on visible parameter sliders
+            int adv_height = 165;
+            if (sim.params.count_dist == DIST_NEGATIVE_BINOMIAL) adv_height += 26;
+            if (sim.params.size_dist == SIZE_POWER_LAW) adv_height += 26;
 
-            DrawText("Step size:", panel_x + 20, btn_y + 8, 16, LIGHTGRAY);
-            if (GuiTextBox((Rectangle){panel_x + 120, btn_y + 5, 120, 25},
+            DrawRectangle(panel_x + 10, btn_y, PANEL_WIDTH - 20, adv_height, (Color){40, 40, 40, 200});
+
+            int adv_y = btn_y + 10;
+
+            // Step size
+            DrawText("Step size:", panel_x + 20, adv_y, 16, LIGHTGRAY);
+            if (GuiTextBox((Rectangle){panel_x + 120, adv_y - 3, 100, 24},
                           step_size_text, 16, step_size_edit)) {
                 step_size_edit = !step_size_edit;
             }
@@ -451,19 +465,87 @@ int main(void) {
                 int val = atoi(step_size_text);
                 if (val > 0) step_size = val;
             }
+            adv_y += 32;
 
-            // Dup/Del bias slider
-            DrawText("Dup/Del bias:", panel_x + 20, btn_y + 45, 16, LIGHTGRAY);
-            GuiSlider(
-                (Rectangle){panel_x + 140, btn_y + 43, 200, 20},
-                NULL, NULL,
-                &sim.params.dup_bias, 0.0f, 1.0f);
-            DrawText(TextFormat("%.0f%% dup", sim.params.dup_bias * 100), panel_x + 350, btn_y + 45, 14, WHITE);
+            // Dup/Del bias (own row)
+            DrawText("Dup/Del bias:", panel_x + 20, adv_y, 16, LIGHTGRAY);
+            GuiSlider((Rectangle){panel_x + 140, adv_y - 2, 200, 20}, NULL, NULL,
+                      &sim.params.dup_bias, 0.0f, 1.0f);
+            DrawText(TextFormat("%.0f%% dup", sim.params.dup_bias * 100), panel_x + 350, adv_y, 14, WHITE);
+            adv_y += 32;
 
             // Hard bounds checkbox
-            GuiCheckBox((Rectangle){panel_x + 20, btn_y + 80, 20, 20}, "Hard bounds (min/max array size)", &sim.params.bounding_enabled);
+            GuiCheckBox((Rectangle){panel_x + 20, adv_y, 20, 20}, "Hard bounds (min/max)", &sim.params.bounding_enabled);
+            adv_y += 35;
 
-            btn_y += 135;
+            // Events dropdown row
+            int events_y = adv_y;
+            DrawText("Events:", panel_x + 20, events_y + 2, 16, LIGHTGRAY);
+            adv_y += 28;
+
+            // Dispersion slider row (only if NB selected)
+            int dispersion_y = adv_y;
+            if (sim.params.count_dist == DIST_NEGATIVE_BINOMIAL) {
+                DrawText("dispersion:", panel_x + 40, dispersion_y + 2, 14, GRAY);
+                GuiSlider((Rectangle){panel_x + 140, dispersion_y, 180, 18}, NULL, NULL,
+                          &sim.params.nb_dispersion, 0.1f, 5.0f);
+                DrawText(TextFormat("%.1f", sim.params.nb_dispersion), panel_x + 330, dispersion_y + 2, 12, WHITE);
+                adv_y += 26;
+            }
+
+            // Sizes dropdown row
+            int sizes_y = adv_y;
+            DrawText("Sizes:", panel_x + 20, sizes_y + 2, 16, LIGHTGRAY);
+            adv_y += 28;
+
+            // Alpha slider row (only if power law selected)
+            if (sim.params.size_dist == SIZE_POWER_LAW) {
+                DrawText("alpha:", panel_x + 40, adv_y + 2, 14, GRAY);
+                GuiSlider((Rectangle){panel_x + 140, adv_y, 180, 18}, NULL, NULL,
+                          &sim.params.power_law_alpha, 1.5f, 4.0f);
+                DrawText(TextFormat("%.1f", sim.params.power_law_alpha), panel_x + 330, adv_y + 2, 12, WHITE);
+            }
+
+            // Draw dropdowns last - lock the other when one is open to prevent click-through
+            int count_dist = (int)sim.params.count_dist;
+            int size_dist = (int)sim.params.size_dist;
+
+            if (count_dist_edit) {
+                // Events is open - draw sizes as disabled, then events on top
+                GuiDisable();
+                GuiDropdownBox((Rectangle){panel_x + 100, sizes_y, 160, 24},
+                               "Poisson;Geometric;Power Law", &size_dist, false);
+                GuiEnable();
+                if (GuiDropdownBox((Rectangle){panel_x + 100, events_y, 160, 24},
+                                   "Poisson;Negative Binomial", &count_dist, count_dist_edit)) {
+                    count_dist_edit = !count_dist_edit;
+                }
+            } else if (size_dist_edit) {
+                // Sizes is open - draw events as disabled, then sizes on top
+                GuiDisable();
+                GuiDropdownBox((Rectangle){panel_x + 100, events_y, 160, 24},
+                               "Poisson;Negative Binomial", &count_dist, false);
+                GuiEnable();
+                if (GuiDropdownBox((Rectangle){panel_x + 100, sizes_y, 160, 24},
+                                   "Poisson;Geometric;Power Law", &size_dist, size_dist_edit)) {
+                    size_dist_edit = !size_dist_edit;
+                }
+            } else {
+                // Neither open - draw both normally
+                if (GuiDropdownBox((Rectangle){panel_x + 100, events_y, 160, 24},
+                                   "Poisson;Negative Binomial", &count_dist, count_dist_edit)) {
+                    count_dist_edit = !count_dist_edit;
+                }
+                if (GuiDropdownBox((Rectangle){panel_x + 100, sizes_y, 160, 24},
+                                   "Poisson;Geometric;Power Law", &size_dist, size_dist_edit)) {
+                    size_dist_edit = !size_dist_edit;
+                }
+            }
+
+            sim.params.count_dist = (CountDistribution)count_dist;
+            sim.params.size_dist = (SizeDistribution)size_dist;
+
+            btn_y += adv_height + 5;
         }
 
         // End scissor mode before drawing overlays

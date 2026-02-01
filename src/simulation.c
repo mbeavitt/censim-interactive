@@ -47,6 +47,118 @@ static int sample_poisson(float lambda) {
     return k - 1;
 }
 
+// Gamma sampling using Marsaglia and Tsang's method
+// Used internally for negative binomial
+static float sample_gamma(float shape, float scale) {
+    if (shape < 1.0f) {
+        // For shape < 1, use shape+1 and then scale
+        float u = rng_float();
+        return sample_gamma(shape + 1.0f, scale) * powf(u, 1.0f / shape);
+    }
+
+    float d = shape - 1.0f / 3.0f;
+    float c = 1.0f / sqrtf(9.0f * d);
+
+    while (1) {
+        float x, v;
+        do {
+            // Box-Muller for standard normal
+            float u1 = rng_float();
+            float u2 = rng_float();
+            x = sqrtf(-2.0f * logf(u1 + 1e-10f)) * cosf(2.0f * 3.14159265f * u2);
+            v = 1.0f + c * x;
+        } while (v <= 0.0f);
+
+        v = v * v * v;
+        float u = rng_float();
+
+        if (u < 1.0f - 0.0331f * x * x * x * x) {
+            return d * v * scale;
+        }
+
+        if (logf(u + 1e-10f) < 0.5f * x * x + d * (1.0f - v + logf(v))) {
+            return d * v * scale;
+        }
+    }
+}
+
+// Negative Binomial sampling
+// Models overdispersed count data (variance > mean)
+// Mean = mu, Variance = mu + mu^2/dispersion
+// Higher dispersion = more overdispersion
+static int sample_negative_binomial(float mu, float dispersion) {
+    if (mu <= 0) return 0;
+    if (dispersion <= 0) return sample_poisson(mu);  // Fall back to Poisson
+
+    // NB as Gamma-Poisson mixture
+    // r = dispersion, p = dispersion/(dispersion + mu)
+    float r = dispersion;
+    float lambda = sample_gamma(r, mu / r);
+    return sample_poisson(lambda);
+}
+
+// Geometric sampling (number of failures before first success)
+// Mean = (1-p)/p, so p = 1/(1+mean)
+// Models exponentially decaying probability - small values more likely
+static int sample_geometric(float mean) {
+    if (mean <= 0) return 1;
+
+    float p = 1.0f / (1.0f + mean);
+    float u = rng_float();
+
+    // Inverse transform: floor(log(u) / log(1-p))
+    int result = (int)(logf(u + 1e-10f) / logf(1.0f - p + 1e-10f));
+    return result < 1 ? 1 : result;
+}
+
+// Power law (Pareto) sampling
+// P(X >= x) ~ x^(-alpha), heavy tailed
+// Mean parameter controls the scale (x_min), alpha controls tail heaviness
+// Small events common, but occasional large events occur
+static int sample_power_law(float mean, float alpha) {
+    if (mean <= 0) return 1;
+    if (alpha <= 1.0f) alpha = 1.1f;  // Must be > 1 for finite mean
+
+    // For Pareto: mean = alpha * x_min / (alpha - 1) when alpha > 1
+    // So x_min = mean * (alpha - 1) / alpha
+    float x_min = mean * (alpha - 1.0f) / alpha;
+    if (x_min < 1.0f) x_min = 1.0f;
+
+    float u = rng_float();
+
+    // Inverse transform: x = x_min * (1 - u)^(-1/alpha)
+    int result = (int)(x_min * powf(1.0f - u + 1e-10f, -1.0f / alpha));
+    return result < 1 ? 1 : result;
+}
+
+// ============================================================================
+// Distribution dispatch helpers
+// ============================================================================
+
+static int sample_count(CountDistribution dist, float mean, float dispersion) {
+    switch (dist) {
+        case DIST_NEGATIVE_BINOMIAL:
+            return sample_negative_binomial(mean, dispersion);
+        case DIST_POISSON:
+        default:
+            return sample_poisson(mean);
+    }
+}
+
+static int sample_size(SizeDistribution dist, float mean, float power_law_alpha) {
+    switch (dist) {
+        case SIZE_GEOMETRIC:
+            return sample_geometric(mean);
+        case SIZE_POWER_LAW:
+            return sample_power_law(mean, power_law_alpha);
+        case SIZE_POISSON:
+        default: {
+            int s = sample_poisson(mean);
+            return s < 1 ? 1 : s;
+        }
+    }
+}
+
 // ============================================================================
 // Repeat Array operations
 // ============================================================================
@@ -124,7 +236,7 @@ static void delete_units(RepeatArray *arr, int start, int end) {
 // ============================================================================
 
 static void apply_snps(Simulation *sim) {
-    int n_snps = sample_poisson(sim->params.snp_rate);
+    int n_snps = sample_count(sim->params.count_dist, sim->params.snp_rate, sim->params.nb_dispersion);
 
     for (int i = 0; i < n_snps; i++) {
         if (sim->array.num_units == 0) break;
@@ -148,7 +260,7 @@ static void apply_snps(Simulation *sim) {
 }
 
 static void apply_indels(Simulation *sim) {
-    int n_indels = sample_poisson(sim->params.indel_rate);
+    int n_indels = sample_count(sim->params.count_dist, sim->params.indel_rate, sim->params.nb_dispersion);
 
     for (int i = 0; i < n_indels; i++) {
         if (sim->array.num_units == 0) {
@@ -173,9 +285,8 @@ static void apply_indels(Simulation *sim) {
         // Choose duplication or deletion based on biased probability
         bool is_dup = rng_float() < dup_prob;
 
-        // Sample size
-        int indel_size = sample_poisson(sim->params.indel_size_lambda);
-        if (indel_size < 1) indel_size = 1;
+        // Sample size using selected distribution
+        int indel_size = sample_size(sim->params.size_dist, sim->params.indel_size_lambda, sim->params.power_law_alpha);
 
         // Pick start position
         int start = rng_int(sim->array.num_units);
@@ -237,6 +348,11 @@ void sim_init(Simulation *sim, int initial_size) {
     sim->params.target_size = DEFAULT_TARGET_SIZE;
     sim->params.elasticity = DEFAULT_ELASTICITY;
     sim->params.dup_bias = 0.5f;  // Equal dup/del by default
+    // Distribution defaults
+    sim->params.count_dist = DIST_POISSON;
+    sim->params.size_dist = SIZE_POISSON;
+    sim->params.nb_dispersion = 1.0f;  // Moderate overdispersion when NB is used
+    sim->params.power_law_alpha = 2.5f;  // Shape parameter (lower = heavier tail)
 
     // Reset stats
     sim->stats.generation = 0;
