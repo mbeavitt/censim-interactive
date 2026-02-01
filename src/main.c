@@ -229,6 +229,10 @@ int main(void) {
             content_height += 170;
             if (sim.params.count_dist == DIST_NEGATIVE_BINOMIAL) content_height += 26;
             if (sim.params.size_dist == SIZE_POWER_LAW) content_height += 26;
+            // Warning space
+            bool bias_warning = (sim.params.dup_bias < 0.49f || sim.params.dup_bias > 0.51f)
+                                && sim.params.elasticity > 0.0f;
+            if (bias_warning) content_height += 22;
         }
 
         // Max scroll is negative (scrolling down moves content up)
@@ -326,7 +330,7 @@ int main(void) {
             NULL, TextFormat("%.2f", sim.params.indel_rate),
             &sim.params.indel_rate, 0.0f, 3.0f);
         if (CheckCollisionPointRec(mouse, indel_row)) {
-            hover_text = "Expected INDELs per generation (Poisson lambda)";
+            hover_text = "Expected INDELs (dup/del) per generation";
             hover_rect = indel_row;
         }
         btn_y += row_h;
@@ -339,7 +343,7 @@ int main(void) {
             NULL, TextFormat("%.1f", sim.params.indel_size_lambda),
             &sim.params.indel_size_lambda, 1.0f, 100.0f);
         if (CheckCollisionPointRec(mouse, size_row)) {
-            hover_text = "Expected repeat units per INDEL (Poisson lambda)";
+            hover_text = "Expected repeat units per INDEL event";
             hover_rect = size_row;
         }
         btn_y += row_h;
@@ -352,7 +356,7 @@ int main(void) {
             NULL, TextFormat("%.2f", sim.params.snp_rate),
             &sim.params.snp_rate, 0.0f, 1.0f);
         if (CheckCollisionPointRec(mouse, snp_row)) {
-            hover_text = "Expected SNPs per generation (Poisson lambda)";
+            hover_text = "Expected point mutations per generation";
             hover_rect = snp_row;
         }
         btn_y += row_h;
@@ -450,12 +454,17 @@ int main(void) {
             int adv_height = 165;
             if (sim.params.count_dist == DIST_NEGATIVE_BINOMIAL) adv_height += 26;
             if (sim.params.size_dist == SIZE_POWER_LAW) adv_height += 26;
+            // Extra space for warning if dup bias != 0.5 and elasticity > 0
+            bool show_bias_warning = (sim.params.dup_bias < 0.49f || sim.params.dup_bias > 0.51f)
+                                     && sim.params.elasticity > 0.0f;
+            if (show_bias_warning) adv_height += 22;
 
             DrawRectangle(panel_x + 10, btn_y, PANEL_WIDTH - 20, adv_height, (Color){40, 40, 40, 200});
 
             int adv_y = btn_y + 10;
 
             // Step size
+            Rectangle step_row = {panel_x + 20, adv_y - 2, 220, 24};
             DrawText("Step size:", panel_x + 20, adv_y, 16, LIGHTGRAY);
             if (GuiTextBox((Rectangle){panel_x + 120, adv_y - 3, 100, 24},
                           step_size_text, 16, step_size_edit)) {
@@ -465,45 +474,80 @@ int main(void) {
                 int val = atoi(step_size_text);
                 if (val > 0) step_size = val;
             }
+            if (CheckCollisionPointRec(mouse, step_row)) {
+                hover_text = "Generations per 'Step N' button click";
+            }
             adv_y += 32;
 
             // Dup/Del bias (own row)
+            Rectangle bias_row = {panel_x + 20, adv_y - 2, 370, 24};
             DrawText("Dup/Del bias:", panel_x + 20, adv_y, 16, LIGHTGRAY);
             GuiSlider((Rectangle){panel_x + 140, adv_y - 2, 200, 20}, NULL, NULL,
                       &sim.params.dup_bias, 0.0f, 1.0f);
             DrawText(TextFormat("%.0f%% dup", sim.params.dup_bias * 100), panel_x + 350, adv_y, 14, WHITE);
-            adv_y += 32;
+            if (CheckCollisionPointRec(mouse, bias_row)) {
+                hover_text = "Base probability of duplication vs deletion";
+            }
+            adv_y += 24;
+
+            // Warning about interaction with elastic bounding
+            if (show_bias_warning) {
+                DrawText("! Interacts with elastic bounding", panel_x + 40, adv_y, 12, YELLOW);
+                adv_y += 22;
+            } else {
+                adv_y += 8;
+            }
 
             // Hard bounds checkbox
+            Rectangle bounds_row = {panel_x + 20, adv_y, 300, 20};
             GuiCheckBox((Rectangle){panel_x + 20, adv_y, 20, 20}, "Hard bounds (min/max)", &sim.params.bounding_enabled);
+            if (CheckCollisionPointRec(mouse, bounds_row)) {
+                hover_text = "Enforce min/max array size limits";
+            }
             adv_y += 35;
 
             // Events dropdown row
             int events_y = adv_y;
+            Rectangle events_row = {panel_x + 20, events_y, 250, 24};
             DrawText("Events:", panel_x + 20, events_y + 2, 16, LIGHTGRAY);
+            if (CheckCollisionPointRec(mouse, events_row) && !count_dist_edit && !size_dist_edit) {
+                hover_text = "Distribution for mutation event counts per generation";
+            }
             adv_y += 28;
 
             // Dispersion slider row (only if NB selected)
             int dispersion_y = adv_y;
             if (sim.params.count_dist == DIST_NEGATIVE_BINOMIAL) {
+                Rectangle disp_row = {panel_x + 40, dispersion_y, 300, 20};
                 DrawText("dispersion:", panel_x + 40, dispersion_y + 2, 14, GRAY);
                 GuiSlider((Rectangle){panel_x + 140, dispersion_y, 180, 18}, NULL, NULL,
                           &sim.params.nb_dispersion, 0.1f, 5.0f);
                 DrawText(TextFormat("%.1f", sim.params.nb_dispersion), panel_x + 330, dispersion_y + 2, 12, WHITE);
+                if (CheckCollisionPointRec(mouse, disp_row)) {
+                    hover_text = "Overdispersion (k): lower = more variance, higher = more Poisson-like";
+                }
                 adv_y += 26;
             }
 
             // Sizes dropdown row
             int sizes_y = adv_y;
+            Rectangle sizes_row = {panel_x + 20, sizes_y, 250, 24};
             DrawText("Sizes:", panel_x + 20, sizes_y + 2, 16, LIGHTGRAY);
+            if (CheckCollisionPointRec(mouse, sizes_row) && !count_dist_edit && !size_dist_edit) {
+                hover_text = "Distribution for mutation sizes (dup/del length)";
+            }
             adv_y += 28;
 
             // Alpha slider row (only if power law selected)
             if (sim.params.size_dist == SIZE_POWER_LAW) {
+                Rectangle alpha_row = {panel_x + 40, adv_y, 300, 20};
                 DrawText("alpha:", panel_x + 40, adv_y + 2, 14, GRAY);
                 GuiSlider((Rectangle){panel_x + 140, adv_y, 180, 18}, NULL, NULL,
                           &sim.params.power_law_alpha, 1.5f, 4.0f);
                 DrawText(TextFormat("%.1f", sim.params.power_law_alpha), panel_x + 330, adv_y + 2, 12, WHITE);
+                if (CheckCollisionPointRec(mouse, alpha_row)) {
+                    hover_text = "Tail heaviness: lower = heavier tail (more large events)";
+                }
             }
 
             // Draw dropdowns last - lock the other when one is open to prevent click-through
