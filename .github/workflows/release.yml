@@ -1,0 +1,175 @@
+name: Build and Release
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v1.0.3)'
+        required: true
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install raylib premake
+
+      - name: Build binary
+        run: |
+          premake5 gmake2
+          make -C build config=release
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build app bundle
+        run: |
+          chmod +x packaging/build_app.sh packaging/create_dmg.sh
+          ./packaging/build_app.sh
+          ./packaging/create_dmg.sh
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: packaging/build/*.dmg
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libraylib-dev \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxinerama-dev \
+            fuse \
+            libfuse2
+
+      - name: Install premake5
+        run: |
+          wget https://github.com/premake/premake-core/releases/download/v5.0.0-beta2/premake-5.0.0-beta2-linux.tar.gz
+          tar -xzf premake-5.0.0-beta2-linux.tar.gz
+          sudo mv premake5 /usr/local/bin/
+
+      - name: Build binary
+        run: |
+          premake5 gmake2
+          make -C build config=release
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build Python bundle
+        run: |
+          pip install pyinstaller
+          pip install -r scripts/requirements.txt
+          pyinstaller --onedir --name visualize_umap \
+            --distpath AppDir/usr/lib \
+            scripts/visualize_umap.py
+
+      - name: Create AppImage
+        run: |
+          # Download appimagetool
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+
+          # Create AppDir structure
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+
+          cp bin/Release/censim AppDir/usr/bin/
+          cp packaging/icon.png AppDir/usr/share/icons/hicolor/256x256/apps/censim.png
+          cp packaging/icon.png AppDir/censim.png
+
+          # Create desktop file
+          cat > AppDir/censim.desktop << 'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=CenSim
+          Exec=censim
+          Icon=censim
+          Categories=Science;Education;
+          Comment=Interactive centromere evolution simulator
+          EOF
+
+          # Create AppRun
+          cat > AppDir/AppRun << 'EOF'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          export PATH="${HERE}/usr/bin:${HERE}/usr/lib/visualize_umap:${PATH}"
+          export CENSIM_RESOURCES="${HERE}/usr/lib"
+          exec "${HERE}/usr/bin/censim" "$@"
+          EOF
+          chmod +x AppDir/AppRun
+
+          # Build AppImage
+          ./appimagetool-x86_64.AppImage AppDir CenSim-x86_64.AppImage
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: CenSim-x86_64.AppImage
+
+  upload-release:
+    needs: [build-macos, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-dmg
+          path: artifacts/
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-appimage
+          path: artifacts/
+
+      - name: Get tag name
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          files: |
+            artifacts/*.dmg
+            artifacts/*.AppImage
