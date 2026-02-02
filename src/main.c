@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <raylib.h>
 
@@ -11,20 +12,33 @@
 // Get the path to the visualize_umap executable/script
 // In app bundle: uses CENSIM_RESOURCES env var pointing to bundled PyInstaller binary
 // In dev mode: uses python3 with script relative to executable
+// If output_path is NULL, uses --show mode to display interactively
 static void get_umap_command(char *cmd, size_t cmd_size, const char *fasta_path,
                              const char *output_path, int grid_width) {
     const char *resources = getenv("CENSIM_RESOURCES");
 
     if (resources && strlen(resources) > 0) {
         // App bundle mode: use bundled PyInstaller executable
-        snprintf(cmd, cmd_size,
-            "\"%s/visualize_umap/visualize_umap\" \"%s\" -o \"%s\" -w %d &",
-            resources, fasta_path, output_path, grid_width);
+        if (output_path) {
+            snprintf(cmd, cmd_size,
+                "\"%s/visualize_umap/visualize_umap\" \"%s\" -o \"%s\" -w %d &",
+                resources, fasta_path, output_path, grid_width);
+        } else {
+            snprintf(cmd, cmd_size,
+                "\"%s/visualize_umap/visualize_umap\" \"%s\" --show -w %d &",
+                resources, fasta_path, grid_width);
+        }
     } else {
         // Development mode: use python3 with script
-        snprintf(cmd, cmd_size,
-            "python3 \"%s/../../scripts/visualize_umap.py\" \"%s\" -o \"%s\" -w %d &",
-            GetApplicationDirectory(), fasta_path, output_path, grid_width);
+        if (output_path) {
+            snprintf(cmd, cmd_size,
+                "python3 \"%s/../../scripts/visualize_umap.py\" \"%s\" -o \"%s\" -w %d &",
+                GetApplicationDirectory(), fasta_path, output_path, grid_width);
+        } else {
+            snprintf(cmd, cmd_size,
+                "python3 \"%s/../../scripts/visualize_umap.py\" \"%s\" --show -w %d &",
+                GetApplicationDirectory(), fasta_path, grid_width);
+        }
     }
 }
 
@@ -152,6 +166,7 @@ int main(void) {
     bool show_advanced = false;
     char step_size_text[16] = "10000";
     bool step_size_edit = false;
+    double umap_start_time = 0.0;  // When UMAP was started (0 = not running)
     int refresh_counter = 0;
     float panel_scroll = 0.0f;  // Scroll offset for controls panel
     bool count_dist_edit = false;  // Dropdown state
@@ -403,37 +418,38 @@ int main(void) {
         btn_y += row_h + 10;
 
         // UMAP Visualization button
-        if (GuiButton((Rectangle){panel_x + 20, btn_y, 370, btn_h}, "#27#UMAP Visualization (slow)")) {
-            // Get output path via save dialog
-            char cmd[512];
-            snprintf(cmd, sizeof(cmd),
-                "osascript -e 'POSIX path of (choose file name with prompt \"Save UMAP visualization as:\" default name \"umap_gen%d.png\")' 2>/dev/null",
-                sim.stats.generation);
-            FILE *pipe = popen(cmd, "r");
-            if (pipe) {
-                char outpath[1024] = {0};
-                if (fgets(outpath, sizeof(outpath), pipe)) {
-                    outpath[strcspn(outpath, "\n")] = 0;
-                    if (strlen(outpath) > 0) {
-                        // Write temp FASTA
-                        char tempfasta[256];
-                        snprintf(tempfasta, sizeof(tempfasta), "/tmp/censim_temp_%d.fasta", sim.stats.generation);
-                        FILE *f = fopen(tempfasta, "w");
-                        if (f) {
-                            for (int i = 0; i < sim.array.num_units; i++) {
-                                fprintf(f, ">repeat_%d\n%s\n", i + 1, sim.array.units[i]);
-                            }
-                            fclose(f);
+        // Check if UMAP signaled ready (file exists)
+        bool umap_ready = (access("/tmp/censim_umap_ready", F_OK) == 0);
+        if (umap_ready && umap_start_time > 0.0) {
+            remove("/tmp/censim_umap_ready");
+            umap_start_time = 0.0;  // Reset
+        }
+        bool umap_running = (umap_start_time > 0.0 && (GetTime() - umap_start_time) < 60.0);
+        if (umap_running) {
+            // Show running state
+            GuiDisable();
+            GuiButton((Rectangle){panel_x + 20, btn_y, 370, btn_h}, "#27#UMAP Running...");
+            GuiEnable();
+        } else if (GuiButton((Rectangle){panel_x + 20, btn_y, 370, btn_h}, "#27#UMAP Visualization (slow)")) {
+            // Remove old signal file if exists
+            remove("/tmp/censim_umap_ready");
 
-                            // Build and run visualization command
-                            char script_cmd[2048];
-                            get_umap_command(script_cmd, sizeof(script_cmd), tempfasta, outpath, grid_width);
-                            printf("Running: %s\n", script_cmd);
-                            system(script_cmd);
-                        }
-                    }
+            // Write temp FASTA
+            char tempfasta[256];
+            snprintf(tempfasta, sizeof(tempfasta), "/tmp/censim_temp_%d.fasta", sim.stats.generation);
+            FILE *f = fopen(tempfasta, "w");
+            if (f) {
+                for (int i = 0; i < sim.array.num_units; i++) {
+                    fprintf(f, ">repeat_%d\n%s\n", i + 1, sim.array.units[i]);
                 }
-                pclose(pipe);
+                fclose(f);
+
+                // Build and run visualization command (show mode)
+                char script_cmd[2048];
+                get_umap_command(script_cmd, sizeof(script_cmd), tempfasta, NULL, grid_width);
+                printf("Running: %s\n", script_cmd);
+                system(script_cmd);
+                umap_start_time = GetTime();
             }
         }
         btn_y += btn_spacing;

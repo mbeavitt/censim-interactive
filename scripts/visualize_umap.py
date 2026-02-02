@@ -98,7 +98,7 @@ def save_3d_plot(rgb_coords, unique_sequences, output_dir):
     print(f"  Saved: {output_path}")
 
 
-def visualize_2d(sequences, color_map, output_path, grid_width=100, tile_size=8):
+def visualize_2d(sequences, color_map, output_path=None, grid_width=100, tile_size=8, show=False):
     """Create 2D grid visualization."""
     n_repeats = len(sequences)
     n_rows = (n_repeats + grid_width - 1) // grid_width
@@ -134,18 +134,26 @@ def visualize_2d(sequences, color_map, output_path, grid_width=100, tile_size=8)
     plt.suptitle(title, fontsize=14, y=0.98)
     plt.tight_layout()
 
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"  Saved: {output_path}")
+    if show:
+        print("  Showing plot...")
+        # Signal that we're ready to show (for UI feedback)
+        signal_file = Path("/tmp/censim_umap_ready")
+        signal_file.touch()
+        plt.show()
+    elif output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  Saved: {output_path}")
 
 
 def main():
     parser = argparse.ArgumentParser(description='UMAP visualization for simulation output')
     parser.add_argument('fasta', help='Input FASTA file')
-    parser.add_argument('-o', '--output', default='umap_viz.png', help='Output image path')
+    parser.add_argument('-o', '--output', help='Output image path (if not using --show)')
     parser.add_argument('-w', '--grid-width', type=int, default=100, help='Grid width')
     parser.add_argument('-t', '--tile-size', type=int, default=8, help='Tile size in pixels')
     parser.add_argument('--no-3d', action='store_true', help='Skip 3D color space plot')
+    parser.add_argument('--show', action='store_true', help='Show plot interactively instead of saving')
 
     args = parser.parse_args()
 
@@ -159,15 +167,16 @@ def main():
     print("Computing UMAP color mapping...")
     color_map, rgb_coords = compute_color_map(unique_sequences)
 
-    output_path = Path(args.output)
-    output_dir = output_path.parent
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = Path(args.output) if args.output else None
+    if output_path:
+        output_dir = output_path.parent
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    if not args.no_3d:
-        save_3d_plot(rgb_coords, unique_sequences, output_dir)
+        if not args.no_3d:
+            save_3d_plot(rgb_coords, unique_sequences, output_dir)
 
     print("Creating 2D visualization...")
-    visualize_2d(sequences, color_map, output_path, args.grid_width, args.tile_size)
+    visualize_2d(sequences, color_map, output_path, args.grid_width, args.tile_size, show=args.show)
 
     print("Done!")
 
