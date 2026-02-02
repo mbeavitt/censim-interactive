@@ -138,7 +138,7 @@ jobs:
           chmod +x AppDir/AppRun
 
           # Build AppImage
-          ./appimagetool-x86_64.AppImage AppDir CenSim-x86_64.AppImage
+          ARCH=x86_64 ./appimagetool-x86_64.AppImage AppDir CenSim-x86_64.AppImage
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
