@@ -5,6 +5,186 @@
 
 #include <raylib.h>
 
+// Forward declare for history functions
+#include "simulation.h"
+
+// ============================================================================
+// Stats History for Mission Control plots
+// ============================================================================
+
+#define HISTORY_MAX 1000  // Max data points to store
+
+typedef struct {
+    int generation[HISTORY_MAX];
+    float diversity[HISTORY_MAX];
+    int unique[HISTORY_MAX];
+    int array_size[HISTORY_MAX];
+    int count;
+    int sample_interval;  // Sample every N generations
+    int last_sampled_gen;
+} StatsHistory;
+
+static void history_init(StatsHistory *h) {
+    h->count = 0;
+    h->sample_interval = 100;
+    h->last_sampled_gen = -1;
+}
+
+static void history_clear(StatsHistory *h) {
+    h->count = 0;
+    h->last_sampled_gen = -1;
+}
+
+static void history_record(StatsHistory *h, Simulation *sim) {
+    // Only sample at intervals to avoid too many points
+    if (sim->stats.generation - h->last_sampled_gen < h->sample_interval) return;
+
+    int unique = sim_count_unique(sim);
+    float diversity = (sim->array.num_units > 0)
+        ? (float)unique / (float)sim->array.num_units : 0.0f;
+
+    // Shift data if buffer full
+    if (h->count >= HISTORY_MAX) {
+        for (int i = 0; i < HISTORY_MAX - 1; i++) {
+            h->generation[i] = h->generation[i + 1];
+            h->diversity[i] = h->diversity[i + 1];
+            h->unique[i] = h->unique[i + 1];
+            h->array_size[i] = h->array_size[i + 1];
+        }
+        h->count = HISTORY_MAX - 1;
+    }
+
+    h->generation[h->count] = sim->stats.generation;
+    h->diversity[h->count] = diversity;
+    h->unique[h->count] = unique;
+    h->array_size[h->count] = sim->array.num_units;
+    h->count++;
+    h->last_sampled_gen = sim->stats.generation;
+}
+
+// Draw a single retro-style plot
+static void draw_plot(Rectangle bounds, const char *title, float *values, int count,
+                      float min_val, float max_val, Color line_color, Color grid_color) {
+    // Background
+    DrawRectangleRec(bounds, (Color){15, 20, 15, 255});
+    DrawRectangleLinesEx(bounds, 2, grid_color);
+
+    // Title with glow effect
+    DrawText(title, bounds.x + 8, bounds.y + 4, 14, grid_color);
+    DrawText(title, bounds.x + 7, bounds.y + 3, 14, line_color);
+
+    // Grid lines (retro scanline effect)
+    for (int i = 1; i < 4; i++) {
+        float y = bounds.y + (bounds.height * i / 4);
+        DrawLine(bounds.x + 1, y, bounds.x + bounds.width - 1, y, (Color){grid_color.r, grid_color.g, grid_color.b, 60});
+    }
+    for (int i = 1; i < 6; i++) {
+        float x = bounds.x + (bounds.width * i / 6);
+        DrawLine(x, bounds.y + 20, x, bounds.y + bounds.height - 5, (Color){grid_color.r, grid_color.g, grid_color.b, 60});
+    }
+
+    if (count < 2) {
+        DrawText("AWAITING DATA...", bounds.x + bounds.width/2 - 60, bounds.y + bounds.height/2 - 8, 12, grid_color);
+        return;
+    }
+
+    // Plot area (with padding)
+    float plot_x = bounds.x + 5;
+    float plot_y = bounds.y + 22;
+    float plot_w = bounds.width - 10;
+    float plot_h = bounds.height - 30;
+
+    // Auto-scale if min/max are equal
+    if (max_val <= min_val) {
+        min_val = values[0];
+        max_val = values[0];
+        for (int i = 1; i < count; i++) {
+            if (values[i] < min_val) min_val = values[i];
+            if (values[i] > max_val) max_val = values[i];
+        }
+        // Add padding
+        float range = max_val - min_val;
+        if (range < 0.001f) range = 1.0f;
+        min_val -= range * 0.1f;
+        max_val += range * 0.1f;
+    }
+
+    // Draw line with glow
+    float x_step = plot_w / (count - 1);
+    for (int i = 0; i < count - 1; i++) {
+        float x1 = plot_x + i * x_step;
+        float x2 = plot_x + (i + 1) * x_step;
+        float y1 = plot_y + plot_h - ((values[i] - min_val) / (max_val - min_val)) * plot_h;
+        float y2 = plot_y + plot_h - ((values[i + 1] - min_val) / (max_val - min_val)) * plot_h;
+
+        // Glow (draw wider line behind)
+        DrawLineEx((Vector2){x1, y1}, (Vector2){x2, y2}, 3.0f, (Color){line_color.r, line_color.g, line_color.b, 80});
+        DrawLineEx((Vector2){x1, y1}, (Vector2){x2, y2}, 1.5f, line_color);
+    }
+
+    // Current value display
+    char val_buf[32];
+    if (max_val > 100) {
+        snprintf(val_buf, sizeof(val_buf), "%.0f", values[count - 1]);
+    } else {
+        snprintf(val_buf, sizeof(val_buf), "%.3f", values[count - 1]);
+    }
+    int val_w = MeasureText(val_buf, 12);
+    DrawText(val_buf, bounds.x + bounds.width - val_w - 8, bounds.y + 5, 12, line_color);
+}
+
+// Draw integer values (convert to float for plotting)
+static void draw_plot_int(Rectangle bounds, const char *title, int *values, int count,
+                          int min_val, int max_val, Color line_color, Color grid_color) {
+    static float float_buf[HISTORY_MAX];
+    for (int i = 0; i < count && i < HISTORY_MAX; i++) {
+        float_buf[i] = (float)values[i];
+    }
+    draw_plot(bounds, title, float_buf, count, (float)min_val, (float)max_val, line_color, grid_color);
+}
+
+// Draw the mission control panel
+static void draw_mission_control(StatsHistory *h, int screen_width, int screen_height,
+                                  int panel_height, bool minimized, int ctrl_panel_width) {
+    int panel_y = screen_height - panel_height;
+    int panel_width = screen_width - ctrl_panel_width;  // Stop at control panel
+
+    // Panel background with border
+    DrawRectangle(0, panel_y, panel_width, panel_height, (Color){20, 25, 20, 245});
+    DrawLine(0, panel_y, panel_width, panel_y, (Color){0, 180, 0, 200});
+    DrawLine(0, panel_y + 1, panel_width, panel_y + 1, (Color){0, 100, 0, 150});
+
+    if (minimized) return;
+
+    // Title (centered in stats panel area)
+    const char *mc_title = "[ STATISTICS ]";
+    int title_w = MeasureText(mc_title, 14);
+    DrawText(mc_title, panel_width / 2 - title_w / 2 + 1, panel_y + 6, 14, (Color){0, 60, 0, 255});
+    DrawText(mc_title, panel_width / 2 - title_w / 2, panel_y + 5, 14, (Color){0, 200, 0, 255});
+
+    // Three plots side by side
+    int plot_margin = 15;
+    int plot_top = panel_y + 28;
+    int plot_height = panel_height - 38;
+    int available_width = screen_width - ctrl_panel_width - plot_margin * 4;
+    int plot_width = available_width / 3;
+
+    // Diversity plot (green)
+    Rectangle div_rect = {plot_margin, plot_top, plot_width, plot_height};
+    draw_plot(div_rect, "DIVERSITY", h->diversity, h->count, 0.0f, 1.0f,
+              (Color){0, 255, 100, 255}, (Color){0, 150, 60, 255});
+
+    // Unique repeats plot (cyan)
+    Rectangle uniq_rect = {plot_margin * 2 + plot_width, plot_top, plot_width, plot_height};
+    draw_plot_int(uniq_rect, "UNIQUE SEQS", h->unique, h->count, 0, 0,
+                  (Color){0, 220, 255, 255}, (Color){0, 120, 150, 255});
+
+    // Array size plot (amber/orange)
+    Rectangle size_rect = {plot_margin * 3 + plot_width * 2, plot_top, plot_width, plot_height};
+    draw_plot_int(size_rect, "ARRAY SIZE", h->array_size, h->count, 0, 0,
+                  (Color){255, 180, 0, 255}, (Color){150, 100, 0, 255});
+}
+
 // ============================================================================
 // Resource path helpers (for app bundle support)
 // ============================================================================
@@ -169,6 +349,12 @@ int main(void) {
     double umap_start_time = 0.0;  // When UMAP was started (0 = not running)
     int refresh_counter = 0;
     float panel_scroll = 0.0f;  // Scroll offset for controls panel
+
+    // Mission control state
+    StatsHistory stats_history;
+    history_init(&stats_history);
+    bool mc_minimized = false;
+    int mc_panel_height = 180;
     bool count_dist_edit = false;  // Dropdown state
     bool size_dist_edit = false;   // Dropdown state
 
@@ -215,6 +401,9 @@ int main(void) {
         // Update simulation
         if (running && !sim.stats.collapsed) {
             sim_run(&sim, (int)gens_per_frame);
+
+            // Record stats for mission control
+            history_record(&stats_history, &sim);
 
             // Refresh colorizer cache periodically
             refresh_counter++;
@@ -292,6 +481,7 @@ int main(void) {
             running = false;
             sim_reset(&sim);
             colorizer_clear_cache(&colorizer);
+            history_clear(&stats_history);
         }
         btn_y += btn_spacing;
 
@@ -624,6 +814,18 @@ int main(void) {
             DrawRectangle(tip_x - 5, tip_y - 3, text_width + 10, 20, (Color){50, 50, 55, 240});
             DrawRectangleLines(tip_x - 5, tip_y - 3, text_width + 10, 20, GRAY);
             DrawText(hover_text, tip_x, tip_y, 14, WHITE);
+        }
+
+        // Statistics panel
+        int mc_height = mc_minimized ? 24 : mc_panel_height;
+        draw_mission_control(&stats_history, screen_width, screen_height, mc_height, mc_minimized, PANEL_WIDTH);
+
+        // Minimize/maximize toggle button (far left)
+        int mc_btn_x = 10;
+        int mc_btn_y = screen_height - mc_height + 2;
+        const char *mc_btn_text = mc_minimized ? "^ STATS" : "v STATS";
+        if (GuiButton((Rectangle){mc_btn_x, mc_btn_y, 90, 20}, mc_btn_text)) {
+            mc_minimized = !mc_minimized;
         }
 
         EndDrawing();
