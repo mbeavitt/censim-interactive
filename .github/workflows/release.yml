@@ -60,7 +60,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
-            libraylib-dev \
+            cmake \
             libgl1-mesa-dev \
             libx11-dev \
             libxrandr-dev \
@@ -69,6 +69,13 @@ jobs:
             libxinerama-dev \
             fuse \
             libfuse2
+
+      - name: Build raylib from source
+        run: |
+          git clone --depth 1 --branch 5.0 https://github.com/raysan5/raylib.git
+          cd raylib/src
+          make PLATFORM=PLATFORM_DESKTOP
+          sudo make install
 
       - name: Install premake5
         run: |
