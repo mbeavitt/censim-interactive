@@ -1,21 +1,25 @@
-# Centromere Evolution Simulator
+# CenSim
 
-Real-time visualization of centromeric repeat array evolution using raylib.
+Interactive centromere evolution simulator. Watch satellite repeats mutate, duplicate, and delete in real-time.
 
-## Overview
+![CenSim screenshot](screenshot.png)
 
-Simulates how centromeric DNA repeat arrays evolve over time through:
-- **SNPs** (single nucleotide polymorphisms)
-- **Tandem duplications** (duplicate a segment in place)
-- **Deletions** (remove a segment)
+## What is this?
 
-All mutation rates follow Poisson distributions. INDELs are frame-aligned to maintain repeat unit boundaries.
+Centromeres are regions of chromosomes made up of thousands of tandemly repeated DNA sequences. They evolve surprisingly fast through duplications, deletions, and point mutations. This simulator lets you watch that process happen.
 
-## Building
+Each colored tile represents a 178bp repeat unit. Similar sequences get similar colors, so you can see evolutionary patterns emerge as the array changes.
+
+## Download
+
+**macOS:** [CenSim-1.0.3.dmg](https://github.com/mbeavitt/censim-interactive/releases/download/v1.0.3/CenSim-1.0.3.dmg)
+
+## Building from source
 
 Requires raylib 5.x and premake5:
 
 ```bash
+# macOS
 brew install raylib premake
 
 # Generate makefiles and build
@@ -26,36 +30,40 @@ make -C build config=release
 ./bin/Release/censim
 ```
 
-## Controls
+## Features
 
-- **F11 / F**: Toggle fullscreen
-- **Start/Stop**: Toggle simulation
-- **Step 1000**: Advance 1000 generations
-- **Reset**: Restart simulation
-- **Sliders**: Adjust mutation rates in real-time
-- **Bounding**: Toggle min/max array size enforcement
+- **Real-time simulation** of repeat array evolution
+- **Live statistics panel** showing diversity, unique sequences, and array size over time
+- **UMAP visualization** for sequence similarity (requires Python with umap-learn)
+- **Configurable mutation models**: Poisson, negative binomial, geometric, power law
+- **Elastic bounding** to keep array size near a target
+- **Export to FASTA** for downstream analysis
 
 ## Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `indel_rate` | 0.5 | Expected INDELs per generation |
-| `indel_size_lambda` | 7.6 | Expected size of each INDEL |
-| `snp_rate` | 0.1 | Expected SNPs per generation |
-| `min_array_size` | 300 | Minimum repeats (when bounding enabled) |
-| `max_array_size` | 50000 | Maximum repeats |
-| `initial_size` | 10000 | Starting number of repeats |
+| INDEL rate | 0.5 | Expected duplications/deletions per generation |
+| INDEL size | 7.6 | Expected repeat units per INDEL event |
+| SNP rate | 0.1 | Expected point mutations per generation |
+| Target size | 10000 | Target array size for elastic bounding |
+| Elasticity | 0.1 | Pull strength toward target size |
+| Dup/Del bias | 50% | Base probability of duplication vs deletion |
 
-## Coloring Method
+## Controls
 
-Uses **orthogonal random projection** to map DNA sequences to RGB colors:
+- **Cmd+F** (macOS) / **F11**: Toggle maximize
+- **Start/Stop**: Run or pause the simulation
+- **Step N**: Advance N generations
+- **Reset**: Start fresh
+- **v STATS**: Toggle statistics panel
 
-1. One-hot encode each sequence (178bp × 4 bases = 712 dimensions)
-2. Project through orthogonalized random matrix (712 → 3 dimensions)
-3. Normalize to [0, 1] RGB range
+## How it works
 
-Similar sequences get similar colors, making evolutionary patterns visible.
+**Coloring:** Each sequence is one-hot encoded (178bp × 4 bases = 712 dimensions), projected through an orthogonalized random matrix down to 3D, then normalized to RGB. Similar sequences → similar colors.
 
-## Default Monomer
+**Mutations:** Each generation, the simulator draws mutation counts from the selected distribution (Poisson by default), then applies them at random positions. Duplications copy a contiguous block; deletions remove one.
 
-The simulation starts with copies of the CEN178 consensus sequence (178bp).
+## License
+
+MIT
