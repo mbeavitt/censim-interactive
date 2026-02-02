@@ -3,7 +3,6 @@
 
 workspace "CenSim"
     configurations { "Debug", "Release" }
-    architecture "arm64"
     location "build"
 
 project "censim"
@@ -18,23 +17,6 @@ project "censim"
         "src/**.c"
     }
 
-    -- raylib via Homebrew
-    includedirs {
-        "/opt/homebrew/include"
-    }
-    libdirs {
-        "/opt/homebrew/lib"
-    }
-
-    -- macOS frameworks required by raylib
-    links {
-        "raylib",
-        "OpenGL.framework",
-        "Cocoa.framework",
-        "IOKit.framework",
-        "CoreVideo.framework"
-    }
-
     filter "configurations:Debug"
         defines { "DEBUG" }
         symbols "On"
@@ -45,5 +27,32 @@ project "censim"
         optimize "Speed"
         symbols "Off"
 
+    -- macOS specific
     filter "system:macosx"
+        architecture "arm64"
         defines { "_MACOSX" }
+        includedirs { "/opt/homebrew/include" }
+        libdirs { "/opt/homebrew/lib" }
+        links {
+            "raylib",
+            "OpenGL.framework",
+            "Cocoa.framework",
+            "IOKit.framework",
+            "CoreVideo.framework"
+        }
+
+    -- Linux specific
+    filter "system:linux"
+        architecture "x86_64"
+        defines { "_LINUX" }
+        includedirs { "/usr/local/include" }
+        libdirs { "/usr/local/lib" }
+        links {
+            "raylib",
+            "GL",
+            "m",
+            "pthread",
+            "dl",
+            "rt",
+            "X11"
+        }
