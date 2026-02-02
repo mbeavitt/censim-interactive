@@ -112,7 +112,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << 'EOF'
     <key>CFBundleIdentifier</key>
     <string>com.censim.app</string>
     <key>CFBundleVersion</key>
-    <string>1.0.3</string>
+    <string>1.0.4</string>
     <key>CFBundleShortVersionString</key>
     <string>1.0</string>
     <key>CFBundleExecutable</key>

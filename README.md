@@ -12,7 +12,7 @@ Each colored tile represents a 178bp repeat unit. Similar sequences get similar 
 
 ## Download
 
-**macOS:** [CenSim-1.0.3.dmg](https://github.com/mbeavitt/censim-interactive/releases/latest/download/CenSim-1.0.3.dmg)
+**macOS:** [CenSim.dmg](https://github.com/mbeavitt/censim-interactive/releases/latest/download/CenSim.dmg)
 
 **Linux:** [CenSim-x86_64.AppImage](https://github.com/mbeavitt/censim-interactive/releases/latest/download/CenSim-x86_64.AppImage)
 

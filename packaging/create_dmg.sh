@@ -7,7 +7,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
 APP_BUNDLE="$BUILD_DIR/CenSim.app"
-DMG_NAME="CenSim-1.0.3"
+DMG_NAME="CenSim"
 DMG_PATH="$BUILD_DIR/$DMG_NAME.dmg"
 
 if [ ! -d "$APP_BUNDLE" ]; then
