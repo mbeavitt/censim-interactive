@@ -29,7 +29,6 @@ bin/
 .LSOverride
 
 # Output files
-*.png
 *.jpg
 *.gif
 output/
