@@ -65,8 +65,10 @@ typedef struct {
 } HorHistSet;
 
 // Scan an array, filling `stats` (required) and folding per-HOR values into
-// `hists` (may be NULL).
-void hor_scan(const RepeatArray *array, HorStats *stats, HorHistSet *hists);
+// `hists` (may be NULL). If `cancel` is non-NULL and becomes true mid-scan, the
+// scan aborts early (results are then incomplete and should be discarded).
+void hor_scan(const RepeatArray *array, HorStats *stats, HorHistSet *hists,
+              const volatile bool *cancel);
 
 // Scan and return every detected HOR in a freshly malloc'd array (caller frees).
 // Intended for validation / inspection on small arrays. *out_count is set.

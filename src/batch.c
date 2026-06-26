@@ -44,15 +44,16 @@ void batch_init(Batch *b, BatchConfig cfg, int num_workers) {
     b->results = (TrajResult *)calloc(cfg.num_trajectories, sizeof(TrajResult));
     for (int i = 0; i < cfg.num_trajectories; i++) b->results[i].index = i;
 
-    hist_init(&b->h_unique_per_kb, 0.0f, 3.0f, 40, 0);     // linear (report: ~normal, real mean 2.3)
-    hist_init(&b->h_hors_per_kb,   1.0f, 1000.0f, 50, 1);  // log X (report: num_hors log scale)
-    hist_init(&b->h_block_size,    1.0f, 2000.0f, 60, 1);
-    hist_init(&b->h_block_gap,     1.0f, 100000.0f, 60, 1);
-    hist_init(&b->h_similarity,    0.0f, 1.0f, 50, 0);
-    hist_init(&b->h_diversity,     0.0f, 1.0f, 50, 0);
-    hist_init(&b->h_composite,     1.0f, 1.0e8f, 60, 1);
+    int nb = (cfg.nbins > 0) ? cfg.nbins : 50;
+    hist_init(&b->h_unique_per_kb, 0.0f, 3.0f, nb, 0);      // linear (report: ~normal, real mean 2.3)
+    hist_init(&b->h_hors_per_kb,   1.0f, 1000.0f, nb, 1);   // log X (report: num_hors log scale)
+    hist_init(&b->h_block_size,    1.0f, 2000.0f, nb, 1);
+    hist_init(&b->h_block_gap,     1.0f, 100000.0f, nb, 1);
+    hist_init(&b->h_similarity,    0.0f, 1.0f, nb, 0);
+    hist_init(&b->h_diversity,     0.0f, 1.0f, nb, 0);
+    hist_init(&b->h_composite,     1.0f, 1.0e8f, nb, 1);
     float gmax = (cfg.target_generations > 0) ? (float)cfg.target_generations : 1.0f;
-    hist_init(&b->h_collapse_gen,  0.0f, gmax, 50, 0);
+    hist_init(&b->h_collapse_gen,  0.0f, gmax, nb, 0);
 
     b->next_index = 0;
     b->stop_requested = false;
@@ -115,20 +116,23 @@ static void *worker_main(void *arg) {
             hist_init(&ld,  b->h_diversity.min,  b->h_diversity.max,  b->h_diversity.nbins,  b->h_diversity.log_scale);
             hist_init(&lc,  b->h_composite.min,  b->h_composite.max,  b->h_composite.nbins,  b->h_composite.log_scale);
             HorHistSet hs = { &ls, &lg, &lsi, &ld, &lc };
-            hor_scan(&sim.array, &r.hor, &hs);
+            hor_scan(&sim.array, &r.hor, &hs, &b->stop_requested);
 
-            pthread_mutex_lock(&b->lock);
-            b->results[idx] = r;
-            hist_add(&b->h_unique_per_kb, (float)r.unique_per_kb);
-            hist_add(&b->h_hors_per_kb,   (float)r.hor.hors_per_kb);
-            hist_merge(&b->h_block_size, &ls);
-            hist_merge(&b->h_block_gap,  &lg);
-            hist_merge(&b->h_similarity, &lsi);
-            hist_merge(&b->h_diversity,  &ld);
-            hist_merge(&b->h_composite,  &lc);
-            b->survived++;
-            b->completed++;
-            pthread_mutex_unlock(&b->lock);
+            // If stop was requested, the scan may have aborted mid-way; discard.
+            if (!b->stop_requested) {
+                pthread_mutex_lock(&b->lock);
+                b->results[idx] = r;
+                hist_add(&b->h_unique_per_kb, (float)r.unique_per_kb);
+                hist_add(&b->h_hors_per_kb,   (float)r.hor.hors_per_kb);
+                hist_merge(&b->h_block_size, &ls);
+                hist_merge(&b->h_block_gap,  &lg);
+                hist_merge(&b->h_similarity, &lsi);
+                hist_merge(&b->h_diversity,  &ld);
+                hist_merge(&b->h_composite,  &lc);
+                b->survived++;
+                b->completed++;
+                pthread_mutex_unlock(&b->lock);
+            }
 
             hist_free(&ls); hist_free(&lg); hist_free(&lsi); hist_free(&ld); hist_free(&lc);
         } else {
@@ -145,14 +149,22 @@ static void *worker_main(void *arg) {
 
         sim_free(&sim);
     }
+    pthread_mutex_lock(&b->lock);
+    b->workers_running--;
+    pthread_mutex_unlock(&b->lock);
     return NULL;
 }
 
 void batch_start(Batch *b) {
     b->running = true;
+    b->workers_running = b->num_workers;
     for (int i = 0; i < b->num_workers; i++) {
         pthread_create(&b->threads[i], NULL, worker_main, b);
     }
+}
+
+void batch_request_stop(Batch *b) {
+    b->stop_requested = true;  // non-blocking; workers abandon work and exit
 }
 
 bool batch_is_complete(Batch *b) {

@@ -78,7 +78,8 @@ static void hists_fold(HorHistSet *h, const HorBlock *b) {
     if (h->composite)  hist_add(h->composite, (float)b->composite);
 }
 
-void hor_scan(const RepeatArray *array, HorStats *stats, HorHistSet *hists) {
+void hor_scan(const RepeatArray *array, HorStats *stats, HorHistSet *hists,
+              const volatile bool *cancel) {
     memset(stats, 0, sizeof(*stats));
     int n = array->num_units;
     stats->num_units = n;
@@ -89,6 +90,7 @@ void hor_scan(const RepeatArray *array, HorStats *stats, HorHistSet *hists) {
 
     // Walk each diagonal offset d; find maximal pairwise-similar runs along it.
     for (int d = 1; d < n; d++) {
+        if (cancel && *cancel) return;  // abort early on cancellation
         int  run = 0;
         long run_snv = 0;
         int  limit = n - d;

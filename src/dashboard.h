@@ -19,7 +19,8 @@ typedef struct {
     float f_indel_size;
     bool  unbounded;       // true = paper free-drift; false = elastic bounded
 
-    bool  log_y;           // log-scale Y axis on the count histograms (default on)
+    float f_nbins;         // histogram bin resolution (applied on next Run)
+    bool  plot_log_y[6];   // per-plot log-scale Y toggle
     bool  show_advanced;   // advanced controls collapsible state
 
     Batch batch;

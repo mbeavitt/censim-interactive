@@ -20,14 +20,30 @@
 #define REF_REAL_BLOCK_SIZE_MED    3.5f
 #define REF_REAL_SIMILARITY_MED    0.16f
 
-#define DASH_MAXBINS 64
+#define DASH_MAXBINS 256
 
 typedef struct {
     int   nbins, log_scale;
     float min, max;
     long  counts[DASH_MAXBINS];
-    long  total, maxcount;
+    long  total, maxcount, underflow, overflow;
 } HistSnap;
+
+// Compact axis-number formatting into a small rotating buffer (so several calls
+// can appear in one DrawText line).
+static const char *fmt(float v) {
+    static char bufs[6][24];
+    static int k = 0;
+    char *o = bufs[k = (k + 1) % 6];
+    float a = v < 0 ? -v : v;
+    if (v == 0)            snprintf(o, 24, "0");
+    else if (a >= 1e5f)    snprintf(o, 24, "%.0e", v);
+    else if (a >= 100.0f)  snprintf(o, 24, "%.0f", v);
+    else if (a >= 10.0f)   snprintf(o, 24, "%.0f", v);
+    else if (a >= 1.0f)    snprintf(o, 24, "%.1f", v);
+    else                   snprintf(o, 24, "%.2f", v);
+    return o;
+}
 
 typedef struct {
     float value;
@@ -46,6 +62,33 @@ static void snap(HistSnap *s, const Histogram *h) {
     }
     s->total = h->total;
     s->maxcount = mx;
+    s->underflow = h->underflow;
+    s->overflow = h->overflow;
+}
+
+// x-value at the median of the distribution, or NAN if the median falls outside
+// the histogram's range. Accounts for under/overflow counts.
+static float snap_median(const HistSnap *s) {
+    if (!s || s->total == 0) return NAN;
+    long target = s->total / 2;
+    long cum = s->underflow;
+    if (cum >= target) return NAN;  // median below the plotted range
+    for (int i = 0; i < s->nbins; i++) {
+        cum += s->counts[i];
+        if (cum >= target) {
+            float lo, hi;
+            if (s->log_scale) {
+                float L = log10f(s->min), H = log10f(s->max);
+                lo = powf(10.0f, L + (H - L) * i / s->nbins);
+                hi = powf(10.0f, L + (H - L) * (i + 1) / s->nbins);
+                return sqrtf(lo * hi);
+            }
+            lo = s->min + (s->max - s->min) * i / s->nbins;
+            hi = s->min + (s->max - s->min) * (i + 1) / s->nbins;
+            return 0.5f * (lo + hi);
+        }
+    }
+    return NAN;  // median above the plotted range
 }
 
 // Fraction [0,1] of a value across the histogram's x-range (log-aware).
@@ -63,48 +106,72 @@ static const Color BG    = (Color){15, 20, 15, 255};
 static const Color GRID  = (Color){0, 90, 40, 255};
 static const Color BAR   = (Color){0, 200, 110, 255};
 static const Color REAL  = (Color){255, 70, 70, 255};   // A. thaliana ghost
-static const Color UNIF  = (Color){150, 150, 160, 255}; // uniform-model ghost
-
-// Common chrome: frame, title, n=, x-scale tag. Returns the inner plot rect.
-static Rectangle plot_frame(Rectangle b, const char *title, long n,
-                            const char *xtag, const char *ytag) {
-    DrawRectangleRec(b, BG);
-    DrawRectangleLinesEx(b, 1, GRID);
-    DrawText(title, (int)b.x + 6, (int)b.y + 4, 12, BAR);
-    char nbuf[48];
-    snprintf(nbuf, sizeof(nbuf), "n=%ld", n);
-    int nw = MeasureText(nbuf, 10);
-    DrawText(nbuf, (int)(b.x + b.width) - nw - 6, (int)b.y + 5, 10, GRID);
-    if (xtag) DrawText(xtag, (int)(b.x + b.width) - MeasureText(xtag, 9) - 6, (int)(b.y + b.height) - 12, 9, GRID);
-    if (ytag) DrawText(ytag, (int)b.x + 4, (int)b.y + 18, 9, GRID);
-    return (Rectangle){ b.x + 4, b.y + 20, b.width - 8, b.height - 28 };
-}
+static const Color UNIF  = (Color){150, 150, 160, 255}; // uniform-model ghost (unused for now)
+static const Color MED   = (Color){255, 230, 80, 255};  // live median of the plotted data
 
 static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                       RefMark *refs, int nrefs, bool log_y) {
-    const char *xtag = (s && s->log_scale) ? "log x" : "lin x";
-    Rectangle p = plot_frame(b, title, s ? s->total : 0, xtag, log_y ? "log y" : "lin y");
-    float px = p.x, py = p.y, pw = p.width, ph = p.height;
+    DrawRectangleRec(b, BG);
+    DrawRectangleLinesEx(b, 1, GRID);
+    DrawText(title, (int)b.x + 6, (int)b.y + 4, 11, BAR);
+    char nbuf[40];
+    snprintf(nbuf, sizeof(nbuf), "n=%ld", s ? s->total : 0);
+    DrawText(nbuf, (int)b.x + 6, (int)b.y + 17, 9, GRID);
+
+    // Inner plot area: leave a left margin for y numbers and a bottom strip for x.
+    float px = b.x + 40, py = b.y + 30, pw = b.width - 48, ph = b.height - 46;
 
     if (!s || s->maxcount == 0) {
-        DrawText("awaiting data", (int)(b.x + b.width/2 - 40), (int)(b.y + b.height/2), 10, GRID);
-    } else {
-        float denom = log_y ? log10f((float)s->maxcount + 1.0f) : (float)s->maxcount;
-        float bw = pw / s->nbins;
-        for (int i = 0; i < s->nbins; i++) {
-            if (s->counts[i] == 0) continue;
-            float num = log_y ? log10f((float)s->counts[i] + 1.0f) : (float)s->counts[i];
-            float hh = ph * num / denom;
-            DrawRectangle((int)(px + i*bw), (int)(py + ph - hh),
-                          (int)(bw > 1 ? bw - 1 : 1), (int)hh, BAR);
-        }
+        DrawText("awaiting data", (int)(px + pw/2 - 40), (int)(py + ph/2), 10, GRID);
+        return;
     }
+
+    // bars
+    float denom = log_y ? log10f((float)s->maxcount + 1.0f) : (float)s->maxcount;
+    float bw = pw / s->nbins;
+    for (int i = 0; i < s->nbins; i++) {
+        if (s->counts[i] == 0) continue;
+        float num = log_y ? log10f((float)s->counts[i] + 1.0f) : (float)s->counts[i];
+        float hh = ph * num / denom;
+        DrawRectangle((int)(px + i*bw), (int)(py + ph - hh),
+                      (int)(bw > 1 ? bw - 1 : 1), (int)hh, BAR);
+    }
+
+    // y-axis: tick at top (maxcount) and bottom (0); midline for log
+    DrawText(fmt((float)s->maxcount), (int)b.x + 3, (int)py - 4, 9, GRID);
+    DrawText("0", (int)b.x + 3, (int)(py + ph - 8), 9, GRID);
+    DrawText(log_y ? "log" : "lin", (int)b.x + 3, (int)(py + ph/2), 9, GRID);
+
+    // x-axis: 3 ticks (min, mid, max); mid is geometric for log scale
+    float xmin = s->min, xmax = s->max;
+    float xmid = s->log_scale ? sqrtf(xmin * xmax) : 0.5f * (xmin + xmax);
+    int ytick = (int)(py + ph + 2);
+    DrawText(fmt(xmin), (int)px, ytick, 9, GRID);
+    const char *m = fmt(xmid); DrawText(m, (int)(px + pw/2 - MeasureText(m, 9)/2), ytick, 9, GRID);
+    const char *x = fmt(xmax); DrawText(x, (int)(px + pw - MeasureText(x, 9)), ytick, 9, GRID);
+    const char *xs = s->log_scale ? "log x" : "lin x";
+    DrawText(xs, (int)(px + pw - MeasureText(xs, 9)), (int)py - 2, 9, (Color){0,70,30,255});
+
+    // reference markers (vertical lines)
     for (int r = 0; r < nrefs; r++) {
-        float f = s ? frac_of(s, refs[r].value) : -1.0f;
+        float f = frac_of(s, refs[r].value);
         if (f < 0 || f > 1) continue;
-        float x = px + f * pw;
-        DrawLine((int)x, (int)py, (int)x, (int)(py + ph), refs[r].color);
-        if (refs[r].label) DrawText(refs[r].label, (int)x + 2, (int)py + 1, 9, refs[r].color);
+        float xx = px + f * pw;
+        DrawLine((int)xx, (int)py, (int)xx, (int)(py + ph), refs[r].color);
+        if (refs[r].label) DrawText(refs[r].label, (int)xx + 2, (int)py + 1, 9, refs[r].color);
+    }
+
+    // live median of the plotted data (dashed-ish bright marker)
+    float med = snap_median(s);
+    if (!isnan(med)) {
+        float f = frac_of(s, med);
+        if (f >= 0 && f <= 1) {
+            float xx = px + f * pw;
+            for (int yy = (int)py; yy < (int)(py + ph); yy += 6)
+                DrawLine((int)xx, yy, (int)xx, yy + 3, MED);
+            char mb[32]; snprintf(mb, sizeof(mb), "med %s", fmt(med));
+            DrawText(mb, (int)xx + 2, (int)(py + ph - 11), 9, MED);
+        }
     }
 }
 
@@ -119,10 +186,18 @@ void dashboard_init(Dashboard *d) {
     d->f_snp_rate    = DEFAULT_SNP_RATE;
     d->f_indel_size  = DEFAULT_INDEL_SIZE_LAMBDA;
     d->unbounded     = true;
-    d->log_y         = true;   // log-log on the count plots by default (matches paper)
+    d->f_nbins       = 50.0f;
     d->show_advanced = false;
     d->has_batch     = false;
     d->started       = false;
+    // Per-plot log-Y defaults matching the paper: log on the count plots
+    // (HORs/kb, block size, gap, composite), linear on unique/kb & similarity.
+    d->plot_log_y[0] = false;  // unique/kb
+    d->plot_log_y[1] = true;   // HORs/kb
+    d->plot_log_y[2] = true;   // block size
+    d->plot_log_y[3] = true;   // block gap
+    d->plot_log_y[4] = false;  // similarity
+    d->plot_log_y[5] = true;   // composite
 }
 
 void dashboard_free(Dashboard *d) {
@@ -146,6 +221,7 @@ static void launch(Dashboard *d) {
     cfg.target_generations = (long)d->f_target_gens;
     cfg.seed_base          = (unsigned int)time(NULL);
     cfg.base_params        = p;
+    cfg.nbins              = (int)d->f_nbins;
 
     batch_init(&d->batch, cfg, 0);
     batch_start(&d->batch);
@@ -166,22 +242,26 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
 
     // ----- snapshot batch state under lock -----
     HistSnap su = {0}, sh = {0}, bs = {0}, bg = {0}, si = {0}, dv = {0}, cp = {0}, cg = {0};
-    int completed = 0, survived = 0, collapsed = 0, total = 0, workers = 0;
-    bool running = false, complete = false;
+    int completed = 0, survived = 0, collapsed = 0, total = 0, workers = 0, workers_live = 0;
+    bool running = false, complete = false, stopping = false;
     if (d->has_batch) {
         Batch *b = &d->batch;
         total = b->cfg.num_trajectories;
         workers = b->num_workers;
         pthread_mutex_lock(&b->lock);
         completed = b->completed; survived = b->survived; collapsed = b->collapsed_count;
+        workers_live = b->workers_running;
         snap(&su, &b->h_unique_per_kb); snap(&sh, &b->h_hors_per_kb);
         snap(&bs, &b->h_block_size);    snap(&bg, &b->h_block_gap);
         snap(&si, &b->h_similarity);    snap(&dv, &b->h_diversity);
         snap(&cp, &b->h_composite);     snap(&cg, &b->h_collapse_gen);
         pthread_mutex_unlock(&b->lock);
-        running = b->running && completed < total;
-        complete = completed >= total;
-        if (b->running && complete) batch_join(b);  // reap finished workers
+        // Reap once every worker has exited (natural finish OR after a stop request).
+        // batch_join is instant here since the threads are already gone.
+        if (b->running && workers_live == 0) batch_join(b);
+        running   = b->running && !b->stop_requested;
+        stopping  = b->stop_requested && workers_live > 0;
+        complete  = !b->running && !b->stop_requested && completed >= total;
     }
 
     // ----- plot grid (left) -----
@@ -198,32 +278,47 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
                                top + margin + r * (gh + margin), gw, gh };
     }
 
-    RefMark ref_uniq[] = {{REF_UNIFORM_UNIQUE_PER_KB, UNIF, "unif"}, {REF_REAL_UNIQUE_PER_KB, REAL, "real"}};
-    RefMark ref_hors[] = {{REF_UNIFORM_HORS_PER_KB, UNIF, "unif"}, {REF_REAL_HORS_PER_KB, REAL, "real"}};
+    // Ghost overlays: A. thaliana (real) only for now; uniform-model markers removed.
+    RefMark ref_uniq[] = {{REF_REAL_UNIQUE_PER_KB, REAL, "real"}};
+    RefMark ref_hors[] = {{REF_REAL_HORS_PER_KB, REAL, "real"}};
     RefMark ref_bs[]   = {{REF_REAL_BLOCK_SIZE_MED, REAL, "real med"}};
     RefMark ref_si[]   = {{REF_REAL_SIMILARITY_MED, REAL, "real med"}};
 
-    bool ly = d->log_y;
-    draw_hist(cell[0], "UNIQUE REPEATS / kb (survivors)", &su, ref_uniq, 2, false);  // paper: linear
-    draw_hist(cell[1], "HORs / kb (survivors)",           &sh, ref_hors, 2, ly);     // paper: log x
-    draw_hist(cell[2], "HOR BLOCK SIZE (log-log)",        &bs, ref_bs, 1, ly);       // paper: log-log
-    draw_hist(cell[3], "HOR BLOCK GAP (log x)",           &bg, NULL, 0, ly);         // paper: log x
-    draw_hist(cell[4], "HOR SIMILARITY",                  &si, ref_si, 1, false);    // paper: linear
-    draw_hist(cell[5], "COMPOSITE HOR METRIC (log x)",    &cp, NULL, 0, ly);         // paper: log x
+    struct { const char *title; HistSnap *s; RefMark *refs; int nrefs; } plots[6] = {
+        {"UNIQUE REPEATS / kb (survivors)", &su, ref_uniq, 1},
+        {"HORs / kb (survivors)",           &sh, ref_hors, 1},
+        {"HOR BLOCK SIZE",                  &bs, ref_bs,   1},
+        {"HOR BLOCK GAP",                   &bg, NULL,     0},
+        {"HOR SIMILARITY",                  &si, ref_si,   1},
+        {"COMPOSITE HOR METRIC",            &cp, NULL,     0},
+    };
+    Vector2 mouse = GetMousePosition();
+    for (int i = 0; i < 6; i++) {
+        draw_hist(cell[i], plots[i].title, plots[i].s, plots[i].refs, plots[i].nrefs, d->plot_log_y[i]);
+        // per-plot clickable Y-scale toggle (top-right of the cell)
+        Rectangle tg = { cell[i].x + cell[i].width - 52, cell[i].y + 3, 46, 15 };
+        bool hov = CheckCollisionPointRec(mouse, tg);
+        DrawRectangleRec(tg, hov ? (Color){0,70,40,255} : (Color){25,35,25,255});
+        DrawRectangleLinesEx(tg, 1, GRID);
+        DrawText(d->plot_log_y[i] ? "Y:log" : "Y:lin", (int)tg.x + 5, (int)tg.y + 3, 9, BAR);
+        if (hov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) d->plot_log_y[i] = !d->plot_log_y[i];
+    }
 
     // ----- status bar -----
     DrawRectangle(0, top - 2, plot_area_w + 4, 2, GRID);
     char status[256];
     if (d->has_batch) {
         float rate = total ? 100.0f * collapsed / total : 0.0f;
+        const char *state = stopping ? "STOPPING..." : running ? "RUNNING"
+                          : complete ? "COMPLETE" : "STOPPED";
         snprintf(status, sizeof(status),
                  "%s  |  %d/%d done   survived %d   collapsed %d (%.0f%%)   |  %d workers",
-                 running ? "RUNNING" : (complete ? "COMPLETE" : "READY"),
-                 completed, total, survived, collapsed, rate, workers);
+                 state, completed, total, survived, collapsed, rate, workers);
     } else {
         snprintf(status, sizeof(status), "Configure a batch and press Run >>");
     }
-    DrawText(status, 8, 40, 14, running ? (Color){0,230,120,255} : LIGHTGRAY);
+    DrawText(status, 8, 40, 14, running ? (Color){0,230,120,255}
+                                        : stopping ? (Color){255,180,0,255} : LIGHTGRAY);
 
     // progress bar
     if (d->has_batch && total > 0) {
@@ -246,10 +341,14 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     slider_row(panel_x, y, sw, "Generations", TextFormat("%.1fM", d->f_target_gens/1e6f), &d->f_target_gens, 100000, 6000000); y += 32;
     GuiCheckBox((Rectangle){panel_x + 12, y, 20, 20}, "Unbounded (paper drift)", &d->unbounded); y += 34;
 
-    bool busy = d->has_batch && running;
-    if (busy) {
+    bool busy = d->has_batch && (running || stopping);
+    if (stopping) {
+        GuiDisable();
+        GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 36}, "#133# Stopping...");
+        GuiEnable();
+    } else if (busy) {
         if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 36}, "#133# Stop"))
-            batch_stop(&d->batch);
+            batch_request_stop(&d->batch);  // non-blocking; UI stays responsive
     } else {
         if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 36}, "#131# Run batch"))
             launch(d);
@@ -268,13 +367,15 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         slider_row(panel_x, y, sw, "INDEL size", TextFormat("%.1f", d->f_indel_size), &d->f_indel_size, 1.0f, 100.0f); y += 30;
         slider_row(panel_x, y, sw, "SNP rate", TextFormat("%.2f", d->f_snp_rate), &d->f_snp_rate, 0.0f, 1.0f); y += 32;
         DrawText("Display", panel_x + 12, (int)y, 14, GRAY); y += 22;
-        GuiCheckBox((Rectangle){panel_x + 12, y, 20, 20}, "Log Y (count plots)", &d->log_y); y += 30;
+        slider_row(panel_x, y, sw, "Bin resolution", TextFormat("%d", (int)d->f_nbins), &d->f_nbins, 20, 200); y += 26;
+        DrawText("(applies on next Run)", panel_x + 14, (int)y, 10, (Color){120,100,60,255}); y += 18;
+        DrawText("Click \"Y:log/lin\" on a plot to toggle", panel_x + 14, (int)y, 10, GRAY); y += 22;
     }
     y += 6;
 
-    // ghost legend
-    DrawText("ghost overlays (report stand-ins):", panel_x + 12, (int)y, 11, GRAY); y += 16;
-    DrawRectangle(panel_x + 12, (int)y + 2, 12, 8, REAL); DrawText("A. thaliana (real)", panel_x + 30, (int)y, 11, LIGHTGRAY); y += 16;
-    DrawRectangle(panel_x + 12, (int)y + 2, 12, 8, UNIF); DrawText("uniform model", panel_x + 30, (int)y, 11, LIGHTGRAY); y += 16;
+    // legend
+    DrawText("overlays:", panel_x + 12, (int)y, 11, GRAY); y += 16;
+    DrawRectangle(panel_x + 12, (int)y + 2, 12, 8, REAL); DrawText("A. thaliana (report stand-in)", panel_x + 30, (int)y, 11, LIGHTGRAY); y += 16;
+    DrawRectangle(panel_x + 12, (int)y + 2, 12, 8, MED);  DrawText("live median of data", panel_x + 30, (int)y, 11, LIGHTGRAY); y += 16;
     DrawText("see TODO.md: wire real data", panel_x + 12, (int)y, 10, (Color){120,100,60,255});
 }

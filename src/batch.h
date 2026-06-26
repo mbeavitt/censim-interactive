@@ -25,6 +25,7 @@ typedef struct {
     long         target_generations;
     SimParams    base_params;     // mutation rates / distributions / bounding for every trajectory
     unsigned int seed_base;       // trajectory i uses seed_base + i
+    int          nbins;           // histogram bin resolution (<=0 -> default 50)
 } BatchConfig;
 
 typedef struct {
@@ -65,6 +66,7 @@ typedef struct {
     volatile bool stop_requested;
     bool running;
     int  num_workers;
+    int  workers_running;         // live worker threads (for non-blocking stop/reap)
     pthread_t *threads;
     pthread_mutex_t lock;
 } Batch;
@@ -81,6 +83,10 @@ void batch_start(Batch *b);
 
 // True once every trajectory has finished.
 bool batch_is_complete(Batch *b);
+
+// Non-blocking: signal workers to abandon all in-flight work and exit ASAP.
+// The UI keeps running; reap with batch_join once workers_running hits 0.
+void batch_request_stop(Batch *b);
 
 // Request cancellation and join all workers (blocks until they exit).
 void batch_stop(Batch *b);
