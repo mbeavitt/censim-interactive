@@ -111,15 +111,18 @@ static float val_frac(float v, float lo, float hi, int log_scale) {
     return (x - lo) / (hi - lo);
 }
 
-// Choose the displayed bin window [b0,b1]. With autoscale, fit to the full span of
-// populated bins (first to last non-empty) -- no tail trimming, since simulated
-// data doesn't throw the wild outliers that would warrant it. Otherwise show the
-// full fixed range.
-static void window_bins(const HistSnap *s, int autoscale, int *b0, int *b1) {
+// Choose the displayed bin window [b0,b1]. With autoscale, fit to the span of
+// *visible* bins at the current Y scale: under log-Y even single-count tail bins
+// render, so include every populated bin; under linear-Y tiny bars vanish, so
+// include only bins above ~0.5% of the peak (otherwise the window stretches out to
+// an invisible tail). Without autoscale, show the full fixed range.
+static void window_bins(const HistSnap *s, int autoscale, int log_y, int *b0, int *b1) {
     *b0 = 0; *b1 = s->nbins - 1;
     if (!autoscale) return;
+    long thresh = 1;
+    if (!log_y) { thresh = s->maxcount / 200; if (thresh < 1) thresh = 1; }  // ~0.5% of peak
     int lo = -1, hi = -1;
-    for (int i = 0; i < s->nbins; i++) if (s->counts[i] > 0) { if (lo < 0) lo = i; hi = i; }
+    for (int i = 0; i < s->nbins; i++) if (s->counts[i] >= thresh) { if (lo < 0) lo = i; hi = i; }
     if (lo < 0) return;  // no in-range data; keep full range
     *b0 = lo; *b1 = hi;
 }
@@ -155,8 +158,8 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
         return;
     }
 
-    // displayed x-window (autoscaled to populated bins) and its value range
-    int b0, b1; window_bins(s, autoscale, &b0, &b1);
+    // displayed x-window (autoscaled to visible bins at this Y scale) and value range
+    int b0, b1; window_bins(s, autoscale, log_y, &b0, &b1);
     // Always keep the natural-data reference lines in view, so the gap between the
     // simulated distribution and the real value stays visible even when autoscaled.
     for (int r = 0; r < nrefs; r++) {
