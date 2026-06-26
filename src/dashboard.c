@@ -6,19 +6,8 @@
 #include <math.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
-
-// ---------------------------------------------------------------------------
-// Reference ("ghost") values overlaid on the plots.
-// TODO: use real data — these are STAND-INS estimated from the R1 report summary
-// stats, not the empirical binned distributions. See repo TODO.md.
-// ---------------------------------------------------------------------------
-#define REF_REAL_UNIQUE_PER_KB     2.3f
-#define REF_UNIFORM_UNIQUE_PER_KB  1.5f
-#define REF_REAL_HORS_PER_KB       261.4f
-#define REF_UNIFORM_HORS_PER_KB    124.5f
-#define REF_REAL_BLOCK_SIZE_MED    3.5f
-#define REF_REAL_SIMILARITY_MED    0.16f
 
 #define DASH_MAXBINS 256
 
@@ -44,12 +33,6 @@ static const char *fmt(float v) {
     else                   snprintf(o, 24, "%.2f", v);
     return o;
 }
-
-typedef struct {
-    float value;
-    Color color;
-    const char *label;
-} RefMark;
 
 static void snap(HistSnap *s, const Histogram *h) {
     s->nbins = h->nbins < DASH_MAXBINS ? h->nbins : DASH_MAXBINS;
@@ -134,8 +117,53 @@ static const Color REAL  = (Color){255, 70, 70, 255};   // A. thaliana ghost
 static const Color UNIF  = (Color){150, 150, 160, 255}; // uniform-model ghost (unused for now)
 static const Color MED   = (Color){255, 230, 80, 255};  // live median of the plotted data
 
+// Left edge value of bin i for a raw Histogram (the reference uses these).
+static float edge_at(const Histogram *h, int i) {
+    if (h->log_scale) {
+        float L = log10f(h->min), H = log10f(h->max);
+        return powf(10.0f, L + (H - L) * i / h->nbins);
+    }
+    return h->min + (h->max - h->min) * i / h->nbins;
+}
+
+// Overlay the real-data distribution as a density curve (red line) over the plot,
+// normalised to its own peak, using the same x-window and y scale as the sim bars.
+static void draw_ref_curve(const Histogram *ref, float px, float py, float pw, float ph,
+                           float lo_v, float hi_v, int log_x, bool log_y) {
+    if (!ref || ref->total == 0) return;
+    float dmax = 0.0f, dmin = 0.0f; int seen = 0;
+    for (int i = 0; i < ref->nbins; i++) {
+        if (ref->counts[i] == 0) continue;
+        float w = log_x ? (edge_at(ref, i + 1) - edge_at(ref, i)) : 1.0f;
+        float d = (float)ref->counts[i] / w;
+        if (!seen || d > dmax) dmax = d;
+        if (!seen || d < dmin) dmin = d;
+        seen = 1;
+    }
+    if (dmax <= 0.0f) return;
+    if (dmin <= 0.0f) dmin = dmax;
+    float lmn = log10f(dmin), lmx = log10f(dmax);
+    if (lmx - lmn < 1e-6f) lmn = lmx - 1.0f;
+
+    int have = 0; float x0 = 0, y0 = 0;
+    for (int i = 0; i < ref->nbins; i++) {
+        float c = log_x ? sqrtf(edge_at(ref, i) * edge_at(ref, i + 1))
+                        : 0.5f * (edge_at(ref, i) + edge_at(ref, i + 1));
+        float f = val_frac(c, lo_v, hi_v, log_x);
+        if (f < 0.0f || f > 1.0f) { have = 0; continue; }  // outside window: break line
+        float w = log_x ? (edge_at(ref, i + 1) - edge_at(ref, i)) : 1.0f;
+        float d = (float)ref->counts[i] / w;
+        float h01 = (d <= 0.0f) ? 0.0f
+                  : (log_y ? (log10f(d) - lmn) / (lmx - lmn) : d / dmax);
+        if (h01 < 0.0f) h01 = 0.0f; else if (h01 > 1.0f) h01 = 1.0f;
+        float X = px + f * pw, Y = py + ph * (1.0f - h01);
+        if (have) DrawLineEx((Vector2){x0, y0}, (Vector2){X, Y}, 2.0f, REAL);
+        x0 = X; y0 = Y; have = 1;
+    }
+}
+
 static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
-                      RefMark *refs, int nrefs, bool log_y, bool autoscale) {
+                      bool log_y, bool autoscale, const Histogram *ref) {
     DrawRectangleRec(b, BG);
     DrawRectangleLinesEx(b, 1, GRID);
     DrawText(title, (int)b.x + 6, (int)b.y + 4, 11, BAR);
@@ -160,15 +188,20 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
 
     // displayed x-window (autoscaled to visible bins at this Y scale) and value range
     int b0, b1; window_bins(s, autoscale, log_y, &b0, &b1);
-    // Always keep the natural-data reference lines in view, so the gap between the
-    // simulated distribution and the real value stays visible even when autoscaled.
-    for (int r = 0; r < nrefs; r++) {
-        float rf = val_frac(refs[r].value, s->min, s->max, s->log_scale);
-        if (rf < 0.0f) continue;
-        int rb = (int)(rf * s->nbins);
-        if (rb < 0) rb = 0; else if (rb >= s->nbins) rb = s->nbins - 1;
-        if (rb < b0) b0 = rb;
-        if (rb > b1) b1 = rb;
+    // Keep the real-data distribution in view too, so the sim-vs-real gap stays
+    // visible: extend the window to cover the reference's populated value range.
+    if (ref && ref->total > 0) {
+        int rlo = -1, rhi = -1;
+        for (int i = 0; i < ref->nbins; i++)
+            if (ref->counts[i] > 0) { if (rlo < 0) rlo = i; rhi = i; }
+        if (rlo >= 0) {
+            float flo = val_frac(edge_at(ref, rlo),     s->min, s->max, s->log_scale);
+            float fhi = val_frac(edge_at(ref, rhi + 1), s->min, s->max, s->log_scale);
+            if (flo >= 0.0f) { int bb = (int)(flo * s->nbins);
+                if (bb < 0) bb = 0; else if (bb >= s->nbins) bb = s->nbins - 1; if (bb < b0) b0 = bb; }
+            if (fhi >= 0.0f) { int bb = (int)(fhi * s->nbins);
+                if (bb < 0) bb = 0; else if (bb >= s->nbins) bb = s->nbins - 1; if (bb > b1) b1 = bb; }
+        }
     }
     // Breathing room: pad the window by ~10% of its span (min 1 bin) each side.
     if (autoscale) {
@@ -229,14 +262,8 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     const char *xs = s->log_scale ? "log x" : "lin x";
     DrawText(xs, (int)(px + pw - MeasureText(xs, 9)), (int)py - 2, 9, (Color){0,70,30,255});
 
-    // reference markers (vertical lines), positioned within the window
-    for (int r = 0; r < nrefs; r++) {
-        float f = val_frac(refs[r].value, lo_v, hi_v, s->log_scale);
-        if (f < 0 || f > 1) continue;
-        float xx = px + f * pw;
-        DrawLine((int)xx, (int)py, (int)xx, (int)(py + ph), refs[r].color);
-        if (refs[r].label) DrawText(refs[r].label, (int)xx + 2, (int)py + 1, 9, refs[r].color);
-    }
+    // real-data distribution overlay (red density curve)
+    draw_ref_curve(ref, px, py, pw, ph, lo_v, hi_v, s->log_scale, log_y);
 
     // live median of the plotted data (dashed bright marker)
     float med = snap_median(s);
@@ -276,10 +303,22 @@ void dashboard_init(Dashboard *d) {
     d->plot_log_y[3] = false;  // block gap   lin
     d->plot_log_y[4] = true;   // similarity  log
     d->plot_log_y[5] = false;  // composite   lin
+
+    // Real-data reference: try $CENSIM_REFERENCE, ./reference.dat, then next to the
+    // executable. Absent is fine -- the overlay just won't draw.
+    reference_init(&d->ref);
+    d->show_ref = true;
+    const char *env = getenv("CENSIM_REFERENCE");
+    if (!(env && reference_load(&d->ref, env)) && !reference_load(&d->ref, "reference.dat")) {
+        char path[1024];
+        snprintf(path, sizeof(path), "%sreference.dat", GetApplicationDirectory());
+        reference_load(&d->ref, path);
+    }
 }
 
 void dashboard_free(Dashboard *d) {
     if (d->has_batch) { batch_free(&d->batch); d->has_batch = false; }
+    reference_free(&d->ref);
 }
 
 static void launch(Dashboard *d) {
@@ -357,24 +396,18 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
                                top + margin + r * (gh + margin), gw, gh };
     }
 
-    // Ghost overlays: A. thaliana (real) only for now; uniform-model markers removed.
-    RefMark ref_uniq[] = {{REF_REAL_UNIQUE_PER_KB, REAL, "real"}};
-    RefMark ref_hors[] = {{REF_REAL_HORS_PER_KB, REAL, "real"}};
-    RefMark ref_bs[]   = {{REF_REAL_BLOCK_SIZE_MED, REAL, "real med"}};
-    RefMark ref_si[]   = {{REF_REAL_SIMILARITY_MED, REAL, "real med"}};
-
-    struct { const char *title; HistSnap *s; RefMark *refs; int nrefs; } plots[6] = {
-        {"UNIQUE REPEATS / kb (survivors)", &su, ref_uniq, 1},
-        {"HORs / kb (survivors)",           &sh, ref_hors, 1},
-        {"HOR BLOCK SIZE",                  &bs, ref_bs,   1},
-        {"HOR BLOCK GAP",                   &bg, NULL,     0},
-        {"HOR SIMILARITY",                  &si, ref_si,   1},
-        {"COMPOSITE HOR METRIC",            &cp, NULL,     0},
+    struct { const char *title; HistSnap *s; const char *metric; } plots[6] = {
+        {"UNIQUE REPEATS / kb (survivors)", &su, "unique_per_kb"},
+        {"HORs / kb (survivors)",           &sh, "hors_per_kb"},
+        {"HOR BLOCK SIZE",                  &bs, "block_size"},
+        {"HOR BLOCK GAP",                   &bg, "block_gap"},
+        {"HOR SIMILARITY",                  &si, "similarity"},
+        {"COMPOSITE HOR METRIC",            &cp, "composite"},
     };
     Vector2 mouse = GetMousePosition();
     for (int i = 0; i < 6; i++) {
-        draw_hist(cell[i], plots[i].title, plots[i].s, plots[i].refs, plots[i].nrefs,
-                  d->plot_log_y[i], d->autoscale_x);
+        const Histogram *ref = d->show_ref ? reference_get(&d->ref, plots[i].metric) : NULL;
+        draw_hist(cell[i], plots[i].title, plots[i].s, d->plot_log_y[i], d->autoscale_x, ref);
         // per-plot clickable Y-scale toggle (top-right of the cell)
         Rectangle tg = { cell[i].x + cell[i].width - 52, cell[i].y + 3, 46, 15 };
         bool hov = CheckCollisionPointRec(mouse, tg);
@@ -455,13 +488,18 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         slider_row(panel_x, y, sw, "Bin resolution", TextFormat("%d", (int)d->f_nbins), &d->f_nbins, 20, 200); y += 26;
         DrawText("(applies on next Run)", panel_x + 14, (int)y, 10, (Color){120,100,60,255}); y += 18;
         GuiCheckBox((Rectangle){panel_x + 12, y, 20, 20}, "Autoscale X (fit data)", &d->autoscale_x); y += 26;
+        GuiCheckBox((Rectangle){panel_x + 12, y, 20, 20}, "Show real data", &d->show_ref); y += 26;
         DrawText("Click \"Y:log/lin\" on a plot to toggle", panel_x + 14, (int)y, 10, GRAY); y += 22;
     }
     y += 6;
 
     // legend
     DrawText("overlays:", panel_x + 12, (int)y, 11, GRAY); y += 16;
-    DrawRectangle(panel_x + 12, (int)y + 2, 12, 8, REAL); DrawText("A. thaliana (report stand-in)", panel_x + 30, (int)y, 11, LIGHTGRAY); y += 16;
+    DrawRectangle(panel_x + 12, (int)y + 2, 12, 8, REAL);
+    if (d->ref.loaded)
+        DrawText(TextFormat("real (n=%d arrays)", d->ref.narrays), panel_x + 30, (int)y, 11, LIGHTGRAY);
+    else
+        DrawText("real data (no reference.dat)", panel_x + 30, (int)y, 11, (Color){150,120,60,255});
+    y += 16;
     DrawRectangle(panel_x + 12, (int)y + 2, 12, 8, MED);  DrawText("live median of data", panel_x + 30, (int)y, 11, LIGHTGRAY); y += 16;
-    DrawText("see TODO.md: wire real data", panel_x + 12, (int)y, 10, (Color){120,100,60,255});
 }

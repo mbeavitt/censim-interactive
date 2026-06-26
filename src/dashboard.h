@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include "batch.h"
+#include "reference.h"
 
 // Multi-trajectory dashboard view: configure + launch a batch of threaded
 // trajectories and watch the report's metric distributions build up live as
@@ -24,6 +25,9 @@ typedef struct {
     bool  plot_log_y[6];   // per-plot log-scale Y toggle
     bool  autoscale_x;     // fit each plot's x-window to the data (~99%)
     bool  show_advanced;   // advanced controls collapsible state
+
+    Reference ref;         // real-data reference distributions (may be unloaded)
+    bool  show_ref;        // overlay the real-data curve
 
     Batch batch;
     bool  has_batch;       // batch_init has been called (needs free)

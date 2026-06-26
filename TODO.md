@@ -1,12 +1,20 @@
 # TODO
 
-## Real reference data (deferred)
+## Real reference data — IMPLEMENTED (needs the HPC run)
 
-**Use real A. thaliana data for the dashboard "ghost" overlays.**
+The dashboard now overlays the **real empirical distributions** as red density
+curves (no longer report-stat stand-ins). Pipeline:
 
-Currently the dashboard target curves are *estimated from the R1 report's summary
-statistics* (means/variances/percentiles), not the real empirical distributions.
-Swap these for the actual binned-histogram caches when available.
+1. On CSD3: `scripts/build_reference.py` + `build_reference.slurm` aggregate all
+   real TRASH HOR tables (method_1 t7c3) + aligned fastas into `reference.dat`.
+   (~325 arrays. Set the SBATCH account/partition/python module first.)
+2. `scp reference.dat` next to the `censim` binary (or point `CENSIM_REFERENCE`
+   at it). The app loads it at startup; toggle with "Show real data" (Advanced).
+
+Bin ranges/scales in build_reference.py MUST stay in sync with `src/batch.c`
+hist_init. Loader: `src/reference.c`; overlay: `draw_ref_curve` in dashboard.c.
+
+### (old) report stand-in stats — no longer used by the app
 
 - Source: `caches.tar.gz` on the rsync.net box (`ssh rsync`). The restricted shell
   blocked `tar` over ssh; need another route to read the index (e.g. `ssh rsync help`
