@@ -155,6 +155,16 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
 
     // displayed x-window (autoscaled to populated bins) and its value range
     int b0, b1; window_bins(s, autoscale, &b0, &b1);
+    // Always keep the natural-data reference lines in view, so the gap between the
+    // simulated distribution and the real value stays visible even when autoscaled.
+    for (int r = 0; r < nrefs; r++) {
+        float rf = val_frac(refs[r].value, s->min, s->max, s->log_scale);
+        if (rf < 0.0f) continue;
+        int rb = (int)(rf * s->nbins);
+        if (rb < 0) rb = 0; else if (rb >= s->nbins) rb = s->nbins - 1;
+        if (rb < b0) b0 = rb;
+        if (rb > b1) b1 = rb;
+    }
     int nb = b1 - b0 + 1;
     float lo_v = bin_edge(s, b0), hi_v = bin_edge(s, b1 + 1);
 
