@@ -180,26 +180,45 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     int nb = b1 - b0 + 1;
     float lo_v = bin_edge(s, b0), hi_v = bin_edge(s, b1 + 1);
 
-    // y scales to the tallest *visible* bar
-    long dmax = 0;
-    for (int i = b0; i <= b1; i++) if (s->counts[i] > dmax) dmax = s->counts[i];
-    if (dmax == 0) dmax = 1;
+    // Per-bin plotted value. On a LOG x-axis, plot DENSITY (count / bin's linear
+    // width) rather than raw counts: log-spaced bins get linearly wider toward the
+    // right, so raw counts pile into a misleading hump, whereas density recovers the
+    // true shape (e.g. block gap: high at small gaps, decaying to rare large ones,
+    // as in the paper). Linear x has equal widths, so density == count up to scale.
+    float dmax_v = 0.0f, dmin_v = 0.0f;
+    int seen = 0;
+    for (int i = b0; i <= b1; i++) {
+        if (s->counts[i] == 0) continue;
+        float w = s->log_scale ? (bin_edge(s, i + 1) - bin_edge(s, i)) : 1.0f;
+        float v = (float)s->counts[i] / w;
+        if (!seen || v > dmax_v) dmax_v = v;
+        if (!seen || v < dmin_v) dmin_v = v;
+        seen = 1;
+    }
+    if (dmax_v <= 0.0f) dmax_v = 1.0f;
+    if (dmin_v <= 0.0f) dmin_v = dmax_v;
+    float lminv = log10f(dmin_v), lmaxv = log10f(dmax_v);
+    if (lmaxv - lminv < 1e-6f) lminv = lmaxv - 1.0f;  // single distinct value
 
-    // bars
-    float denom = log_y ? log10f((float)dmax + 1.0f) : (float)dmax;
     float bw = pw / nb;
     for (int i = b0; i <= b1; i++) {
         if (s->counts[i] == 0) continue;
-        float num = log_y ? log10f((float)s->counts[i] + 1.0f) : (float)s->counts[i];
-        float hh = ph * num / denom;
+        float w = s->log_scale ? (bin_edge(s, i + 1) - bin_edge(s, i)) : 1.0f;
+        float v = (float)s->counts[i] / w;
+        float h01 = log_y ? (log10f(v) - lminv) / (lmaxv - lminv) : v / dmax_v;
+        if (h01 < 0.0f) h01 = 0.0f; else if (h01 > 1.0f) h01 = 1.0f;
+        float hh = ph * h01;
+        if (log_y && hh < 1.0f) hh = 1.0f;  // keep the smallest log bar visible
         DrawRectangle((int)(px + (i - b0) * bw), (int)(py + ph - hh),
                       (int)(bw > 1 ? bw - 1 : 1), (int)hh, BAR);
     }
 
-    // y-axis: tick at top (max visible count) and bottom (0); midline label
-    DrawText(fmt((float)dmax), (int)b.x + 3, (int)py - 4, 9, GRID);
-    DrawText("0", (int)b.x + 3, (int)(py + ph - 8), 9, GRID);
+    // y-axis: top = max plotted value, bottom = 0 (lin) or min (log); scale tag.
+    // For log-x plots the value is a density (count per unit x), else a raw count.
+    DrawText(fmt(dmax_v), (int)b.x + 3, (int)py - 4, 9, GRID);
+    DrawText(log_y ? fmt(dmin_v) : "0", (int)b.x + 3, (int)(py + ph - 8), 9, GRID);
     DrawText(log_y ? "log" : "lin", (int)b.x + 3, (int)(py + ph/2), 9, GRID);
+    DrawText(s->log_scale ? "dens" : "cnt", (int)b.x + 3, (int)(py + ph/2 + 11), 8, (Color){0,70,30,255});
 
     // x-axis: 3 ticks across the displayed window (geometric mid for log)
     float xmid = s->log_scale ? sqrtf(lo_v * hi_v) : 0.5f * (lo_v + hi_v);
