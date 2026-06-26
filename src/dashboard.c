@@ -170,6 +170,13 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
         if (rb < b0) b0 = rb;
         if (rb > b1) b1 = rb;
     }
+    // Breathing room: pad the window by ~10% of its span (min 1 bin) each side.
+    if (autoscale) {
+        int pad = (b1 - b0 + 1) / 10;
+        if (pad < 1) pad = 1;
+        b0 -= pad; if (b0 < 0) b0 = 0;
+        b1 += pad; if (b1 >= s->nbins) b1 = s->nbins - 1;
+    }
     int nb = b1 - b0 + 1;
     float lo_v = bin_edge(s, b0), hi_v = bin_edge(s, b1 + 1);
 
