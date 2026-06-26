@@ -140,6 +140,13 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     snprintf(nbuf, sizeof(nbuf), "n=%ld", s ? s->total : 0);
     DrawText(nbuf, (int)b.x + 6, (int)b.y + 17, 9, GRID);
 
+    // Warn if any data fell outside the binned range (clipped to under/overflow).
+    if (s && (s->underflow > 0 || s->overflow > 0)) {
+        char ob[48];
+        snprintf(ob, sizeof(ob), "clipped <%ld >%ld", s->underflow, s->overflow);
+        DrawText(ob, (int)(b.x + b.width) - MeasureText(ob, 9) - 6, (int)b.y + 17, 9, (Color){255,140,0,255});
+    }
+
     // Inner plot area: leave a left margin for y numbers and a bottom strip for x.
     float px = b.x + 40, py = b.y + 30, pw = b.width - 48, ph = b.height - 46;
 

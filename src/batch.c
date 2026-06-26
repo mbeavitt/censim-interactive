@@ -44,17 +44,20 @@ void batch_init(Batch *b, BatchConfig cfg, int num_workers) {
     b->results = (TrajResult *)calloc(cfg.num_trajectories, sizeof(TrajResult));
     for (int i = 0; i < cfg.num_trajectories; i++) b->results[i].index = i;
 
-    // Fixed binning ranges kept wide enough that data rarely falls into
-    // under/overflow (so the dashboard's autoscale can fit the populated region
-    // without losing data off-axis).
+    // Fixed binning ranges. The unbounded metrics use generous LOG ceilings so
+    // even extreme-parameter runs stay in-range (a high ceiling is cheap on a log
+    // axis, and the dashboard autoscales the display to the populated region).
+    // These cover anything actually computable -- arrays large enough to exceed
+    // them would make the O(n^2) HOR scan intractable anyway. unique/kb and
+    // similarity have true upper bounds (~5.6 and 1) so stay linear/tight.
     int nb = (cfg.nbins > 0) ? cfg.nbins : 50;
-    hist_init(&b->h_unique_per_kb, 0.0f, 6.0f, nb, 0);      // linear (report real mean 2.3)
-    hist_init(&b->h_hors_per_kb,   1.0f, 2000.0f, nb, 1);   // log X (report: num_hors log scale)
-    hist_init(&b->h_block_size,    1.0f, 2000.0f, nb, 1);
-    hist_init(&b->h_block_gap,     1.0f, 200000.0f, nb, 1);
-    hist_init(&b->h_similarity,    0.0f, 1.0f, nb, 0);
-    hist_init(&b->h_diversity,     0.0f, 1.0f, nb, 0);
-    hist_init(&b->h_composite,     1.0f, 1.0e9f, nb, 1);
+    hist_init(&b->h_unique_per_kb, 0.0f, 6.0f, nb, 0);      // linear; hard max ~5.6 (all-unique)
+    hist_init(&b->h_hors_per_kb,   1.0f, 1.0e6f, nb, 1);    // log X
+    hist_init(&b->h_block_size,    1.0f, 1.0e6f, nb, 1);    // log X (block <= array size)
+    hist_init(&b->h_block_gap,     1.0f, 1.0e7f, nb, 1);    // log X
+    hist_init(&b->h_similarity,    0.0f, 1.0f, nb, 0);      // linear; bounded 0..1
+    hist_init(&b->h_diversity,     0.0f, 1.0f, nb, 0);      // linear; bounded 0..1
+    hist_init(&b->h_composite,     1.0f, 1.0e15f, nb, 1);   // log X
     float gmax = (cfg.target_generations > 0) ? (float)cfg.target_generations : 1.0f;
     hist_init(&b->h_collapse_gen,  0.0f, gmax, nb, 0);
 
