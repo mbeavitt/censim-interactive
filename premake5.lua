@@ -61,6 +61,8 @@ project "censim"
 -- built with symbols + frame pointers so it's ready for sampling profilers
 -- (perf, samply, gperftools, valgrind). Build: premake5 gmake2 && make config=release
 -- Profile e.g.: CPUPROFILE=cpu.prof LD_PRELOAD=libprofiler.so ./bin/Release/bench --scan-only 20
+-- Tip: clang gives notably better AVX2 codegen here -- build with: make config=release CC=clang
+-- (the whole app can be built that way too; CI/release stays on gcc for a portable AppImage)
 project "bench"
     kind "ConsoleApp"
     language "C"

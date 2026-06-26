@@ -2,15 +2,44 @@
 #include "config.h"
 #include <stdlib.h>
 #include <string.h>
-// Substitution count between two aligned units (Piotr's compareAB). Exact, plain
-// byte loop; optimize later if needed.
-static int hamming(const char *a, const char *b) {
+// Substitution count between two aligned units (Piotr's compareAB).
+// Portable scalar version (also the fallback on non-x86 / pre-AVX2 CPUs).
+static int hamming_scalar(const char *a, const char *b) {
     int d = 0;
     for (int i = 0; i < REPEAT_SIZE; i++) {
         d += (a[i] != b[i]);
     }
     return d;
 }
+
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+// AVX2 base-mismatch count: compare 32 bytes at a time (cmpeq_epi8 -> per-byte
+// equality mask), count the unequal bytes via popcount of the inverted mask.
+// Compiled with AVX2 codegen via the target attribute regardless of global flags;
+// only invoked when the CPU supports it (see hamming()), so the binary stays
+// portable. Same idea as the hamming256 popcount trick in kmer-variance.
+__attribute__((target("avx2")))
+static int hamming_avx2(const char *a, const char *b) {
+    int diff = 0, i = 0;
+    for (; i + 32 <= REPEAT_SIZE; i += 32) {
+        __m256i va = _mm256_loadu_si256((const __m256i *)(a + i));
+        __m256i vb = _mm256_loadu_si256((const __m256i *)(b + i));
+        unsigned int eq = (unsigned int)_mm256_movemask_epi8(_mm256_cmpeq_epi8(va, vb));
+        diff += 32 - __builtin_popcount(eq);   // bits set in eq = equal bytes
+    }
+    for (; i < REPEAT_SIZE; i++) diff += (a[i] != b[i]);
+    return diff;
+}
+
+static int hamming(const char *a, const char *b) {
+    static int use_avx2 = -1;
+    if (use_avx2 < 0) use_avx2 = __builtin_cpu_supports("avx2");
+    return use_avx2 ? hamming_avx2(a, b) : hamming_scalar(a, b);
+}
+#else
+static int hamming(const char *a, const char *b) { return hamming_scalar(a, b); }
+#endif
 
 // FNV-1a over a unit; used to count unique sequences within a block cheaply.
 static unsigned int unit_hash(const char *seq) {
