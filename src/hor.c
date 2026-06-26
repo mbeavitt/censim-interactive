@@ -51,24 +51,29 @@ static unsigned int unit_hash(const char *seq) {
     return h;
 }
 
-static int cmp_uint(const void *a, const void *b) {
-    unsigned int x = *(const unsigned int *)a, y = *(const unsigned int *)b;
-    return (x > y) - (x < y);
-}
-
 // Count distinct units in block [start, start+len) using precomputed per-unit
-// hashes. Sort a copy + dedup. Hash collisions could in principle merge two
-// distinct units, but with a 32-bit FNV hash over small blocks this is negligible.
+// hashes, via an open-addressing hash set with linear probing: O(len), no sort.
+// 0 is the empty slot; an actual hash of 0 is tracked separately. Hash collisions
+// could in principle merge two distinct units, but with a 32-bit FNV hash over
+// small blocks this is negligible.
 static int count_unique_block(const unsigned int *hashes, int start, int len) {
     if (len <= 1) return len;
-    unsigned int stackbuf[256];
-    unsigned int *h = (len <= 256) ? stackbuf
-                                   : (unsigned int *)malloc(len * sizeof(unsigned int));
-    memcpy(h, hashes + start, (size_t)len * sizeof(unsigned int));
-    qsort(h, len, sizeof(unsigned int), cmp_uint);
-    int unique = 1;
-    for (int i = 1; i < len; i++) if (h[i] != h[i - 1]) unique++;
-    if (h != stackbuf) free(h);
+    int cap = 16;
+    while (cap < len * 2) cap <<= 1;          // power-of-two, load factor < 0.5
+    unsigned int stackbuf[2048];              // covers len up to 1024 without malloc
+    unsigned int *tab = (cap <= 2048) ? stackbuf
+                                      : (unsigned int *)malloc((size_t)cap * sizeof(unsigned int));
+    memset(tab, 0, (size_t)cap * sizeof(unsigned int));
+    unsigned int mask = (unsigned int)cap - 1u;
+    int unique = 0, have_zero = 0;
+    for (int i = 0; i < len; i++) {
+        unsigned int hv = hashes[start + i];
+        if (hv == 0) { if (!have_zero) { have_zero = 1; unique++; } continue; }
+        unsigned int idx = hv & mask;
+        while (tab[idx] != 0 && tab[idx] != hv) idx = (idx + 1) & mask;
+        if (tab[idx] == 0) { tab[idx] = hv; unique++; }
+    }
+    if (tab != stackbuf) free(tab);
     return unique;
 }
 
