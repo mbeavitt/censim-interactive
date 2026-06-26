@@ -27,11 +27,21 @@ void hist_reset(Histogram *h) {
 static int hist_bin_index(const Histogram *h, float value) {
     float lo = h->min, hi = h->max, v = value;
     if (h->log_scale) {
-        // Clamp non-positive into underflow; otherwise work in log10.
-        if (v <= 0.0f) return -1;
+        // A log axis can't place values <= 0 (e.g. block gap == 0 for overlapping
+        // HORs, which are very common). Fold those -- and anything below min -- into
+        // the first bin so they show as a left-edge spike instead of vanishing into
+        // underflow. Only genuine overflow (> max) is flagged.
+        if (v <= 0.0f) return 0;
         lo = log10f(h->min);
         hi = log10f(h->max);
         v  = log10f(v);
+        if (v < lo) return 0;
+        if (v > hi) return h->nbins;
+        float frac = (v - lo) / (hi - lo);
+        int idx = (int)(frac * h->nbins);
+        if (idx >= h->nbins) idx = h->nbins - 1;
+        if (idx < 0) idx = 0;
+        return idx;
     }
     if (v < lo) return -1;
     if (v > hi) return h->nbins;
