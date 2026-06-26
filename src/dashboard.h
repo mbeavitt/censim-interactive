@@ -21,6 +21,7 @@ typedef struct {
 
     float f_nbins;         // histogram bin resolution (applied on next Run)
     bool  plot_log_y[6];   // per-plot log-scale Y toggle
+    bool  autoscale_x;     // fit each plot's x-window to the data (~99%)
     bool  show_advanced;   // advanced controls collapsible state
 
     Batch batch;

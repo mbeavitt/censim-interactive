@@ -44,14 +44,17 @@ void batch_init(Batch *b, BatchConfig cfg, int num_workers) {
     b->results = (TrajResult *)calloc(cfg.num_trajectories, sizeof(TrajResult));
     for (int i = 0; i < cfg.num_trajectories; i++) b->results[i].index = i;
 
+    // Fixed binning ranges kept wide enough that data rarely falls into
+    // under/overflow (so the dashboard's autoscale can fit the populated region
+    // without losing data off-axis).
     int nb = (cfg.nbins > 0) ? cfg.nbins : 50;
-    hist_init(&b->h_unique_per_kb, 0.0f, 3.0f, nb, 0);      // linear (report: ~normal, real mean 2.3)
-    hist_init(&b->h_hors_per_kb,   1.0f, 1000.0f, nb, 1);   // log X (report: num_hors log scale)
+    hist_init(&b->h_unique_per_kb, 0.0f, 6.0f, nb, 0);      // linear (report real mean 2.3)
+    hist_init(&b->h_hors_per_kb,   1.0f, 2000.0f, nb, 1);   // log X (report: num_hors log scale)
     hist_init(&b->h_block_size,    1.0f, 2000.0f, nb, 1);
-    hist_init(&b->h_block_gap,     1.0f, 100000.0f, nb, 1);
+    hist_init(&b->h_block_gap,     1.0f, 200000.0f, nb, 1);
     hist_init(&b->h_similarity,    0.0f, 1.0f, nb, 0);
     hist_init(&b->h_diversity,     0.0f, 1.0f, nb, 0);
-    hist_init(&b->h_composite,     1.0f, 1.0e8f, nb, 1);
+    hist_init(&b->h_composite,     1.0f, 1.0e9f, nb, 1);
     float gmax = (cfg.target_generations > 0) ? (float)cfg.target_generations : 1.0f;
     hist_init(&b->h_collapse_gen,  0.0f, gmax, nb, 0);
 

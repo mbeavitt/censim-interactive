@@ -91,15 +91,42 @@ static float snap_median(const HistSnap *s) {
     return NAN;  // median above the plotted range
 }
 
-// Fraction [0,1] of a value across the histogram's x-range (log-aware).
-static float frac_of(const HistSnap *s, float v) {
-    float lo = s->min, hi = s->max, x = v;
+// x-value at the left edge of bin i (i in [0, nbins]), log-aware.
+static float bin_edge(const HistSnap *s, int i) {
     if (s->log_scale) {
-        if (v <= 0) return -1.0f;
-        lo = log10f(s->min); hi = log10f(s->max); x = log10f(v);
+        float L = log10f(s->min), H = log10f(s->max);
+        return powf(10.0f, L + (H - L) * i / s->nbins);
+    }
+    return s->min + (s->max - s->min) * i / s->nbins;
+}
+
+// Fraction [0,1] of value v across an explicit [lo,hi] window (log-aware).
+static float val_frac(float v, float lo, float hi, int log_scale) {
+    float x = v;
+    if (log_scale) {
+        if (v <= 0 || lo <= 0) return -1.0f;
+        x = log10f(v); lo = log10f(lo); hi = log10f(hi);
     }
     if (hi <= lo) return -1.0f;
     return (x - lo) / (hi - lo);
+}
+
+// Choose the displayed bin window [b0,b1]. With autoscale, trim the extreme 0.5%
+// of in-range counts from each tail (captures ~99% of the data, robust to a lone
+// outlier stretching the axis); otherwise show the full fixed range.
+static void window_bins(const HistSnap *s, int autoscale, int *b0, int *b1) {
+    *b0 = 0; *b1 = s->nbins - 1;
+    if (!autoscale) return;
+    long inrange = 0;
+    for (int i = 0; i < s->nbins; i++) inrange += s->counts[i];
+    if (inrange == 0) return;
+    long lo_t = (long)(inrange * 0.005), hi_t = (long)(inrange * 0.995);
+    long cum = 0; int lo = 0, hi = s->nbins - 1;
+    for (int i = 0; i < s->nbins; i++) { cum += s->counts[i]; if (cum > lo_t) { lo = i; break; } }
+    cum = 0;
+    for (int i = 0; i < s->nbins; i++) { cum += s->counts[i]; if (cum >= hi_t) { hi = i; break; } }
+    if (hi < lo) hi = lo;
+    *b0 = lo; *b1 = hi;
 }
 
 static const Color BG    = (Color){15, 20, 15, 255};
@@ -110,7 +137,7 @@ static const Color UNIF  = (Color){150, 150, 160, 255}; // uniform-model ghost (
 static const Color MED   = (Color){255, 230, 80, 255};  // live median of the plotted data
 
 static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
-                      RefMark *refs, int nrefs, bool log_y) {
+                      RefMark *refs, int nrefs, bool log_y, bool autoscale) {
     DrawRectangleRec(b, BG);
     DrawRectangleLinesEx(b, 1, GRID);
     DrawText(title, (int)b.x + 6, (int)b.y + 4, 11, BAR);
@@ -126,45 +153,54 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
         return;
     }
 
+    // displayed x-window (autoscaled to populated bins) and its value range
+    int b0, b1; window_bins(s, autoscale, &b0, &b1);
+    int nb = b1 - b0 + 1;
+    float lo_v = bin_edge(s, b0), hi_v = bin_edge(s, b1 + 1);
+
+    // y scales to the tallest *visible* bar
+    long dmax = 0;
+    for (int i = b0; i <= b1; i++) if (s->counts[i] > dmax) dmax = s->counts[i];
+    if (dmax == 0) dmax = 1;
+
     // bars
-    float denom = log_y ? log10f((float)s->maxcount + 1.0f) : (float)s->maxcount;
-    float bw = pw / s->nbins;
-    for (int i = 0; i < s->nbins; i++) {
+    float denom = log_y ? log10f((float)dmax + 1.0f) : (float)dmax;
+    float bw = pw / nb;
+    for (int i = b0; i <= b1; i++) {
         if (s->counts[i] == 0) continue;
         float num = log_y ? log10f((float)s->counts[i] + 1.0f) : (float)s->counts[i];
         float hh = ph * num / denom;
-        DrawRectangle((int)(px + i*bw), (int)(py + ph - hh),
+        DrawRectangle((int)(px + (i - b0) * bw), (int)(py + ph - hh),
                       (int)(bw > 1 ? bw - 1 : 1), (int)hh, BAR);
     }
 
-    // y-axis: tick at top (maxcount) and bottom (0); midline for log
-    DrawText(fmt((float)s->maxcount), (int)b.x + 3, (int)py - 4, 9, GRID);
+    // y-axis: tick at top (max visible count) and bottom (0); midline label
+    DrawText(fmt((float)dmax), (int)b.x + 3, (int)py - 4, 9, GRID);
     DrawText("0", (int)b.x + 3, (int)(py + ph - 8), 9, GRID);
     DrawText(log_y ? "log" : "lin", (int)b.x + 3, (int)(py + ph/2), 9, GRID);
 
-    // x-axis: 3 ticks (min, mid, max); mid is geometric for log scale
-    float xmin = s->min, xmax = s->max;
-    float xmid = s->log_scale ? sqrtf(xmin * xmax) : 0.5f * (xmin + xmax);
+    // x-axis: 3 ticks across the displayed window (geometric mid for log)
+    float xmid = s->log_scale ? sqrtf(lo_v * hi_v) : 0.5f * (lo_v + hi_v);
     int ytick = (int)(py + ph + 2);
-    DrawText(fmt(xmin), (int)px, ytick, 9, GRID);
+    DrawText(fmt(lo_v), (int)px, ytick, 9, GRID);
     const char *m = fmt(xmid); DrawText(m, (int)(px + pw/2 - MeasureText(m, 9)/2), ytick, 9, GRID);
-    const char *x = fmt(xmax); DrawText(x, (int)(px + pw - MeasureText(x, 9)), ytick, 9, GRID);
+    const char *x = fmt(hi_v); DrawText(x, (int)(px + pw - MeasureText(x, 9)), ytick, 9, GRID);
     const char *xs = s->log_scale ? "log x" : "lin x";
     DrawText(xs, (int)(px + pw - MeasureText(xs, 9)), (int)py - 2, 9, (Color){0,70,30,255});
 
-    // reference markers (vertical lines)
+    // reference markers (vertical lines), positioned within the window
     for (int r = 0; r < nrefs; r++) {
-        float f = frac_of(s, refs[r].value);
+        float f = val_frac(refs[r].value, lo_v, hi_v, s->log_scale);
         if (f < 0 || f > 1) continue;
         float xx = px + f * pw;
         DrawLine((int)xx, (int)py, (int)xx, (int)(py + ph), refs[r].color);
         if (refs[r].label) DrawText(refs[r].label, (int)xx + 2, (int)py + 1, 9, refs[r].color);
     }
 
-    // live median of the plotted data (dashed-ish bright marker)
+    // live median of the plotted data (dashed bright marker)
     float med = snap_median(s);
     if (!isnan(med)) {
-        float f = frac_of(s, med);
+        float f = val_frac(med, lo_v, hi_v, s->log_scale);
         if (f >= 0 && f <= 1) {
             float xx = px + f * pw;
             for (int yy = (int)py; yy < (int)(py + ph); yy += 6)
@@ -187,6 +223,7 @@ void dashboard_init(Dashboard *d) {
     d->f_indel_size  = DEFAULT_INDEL_SIZE_LAMBDA;
     d->unbounded     = true;
     d->f_nbins       = 50.0f;
+    d->autoscale_x   = true;
     d->show_advanced = false;
     d->has_batch     = false;
     d->started       = false;
@@ -293,7 +330,8 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     };
     Vector2 mouse = GetMousePosition();
     for (int i = 0; i < 6; i++) {
-        draw_hist(cell[i], plots[i].title, plots[i].s, plots[i].refs, plots[i].nrefs, d->plot_log_y[i]);
+        draw_hist(cell[i], plots[i].title, plots[i].s, plots[i].refs, plots[i].nrefs,
+                  d->plot_log_y[i], d->autoscale_x);
         // per-plot clickable Y-scale toggle (top-right of the cell)
         Rectangle tg = { cell[i].x + cell[i].width - 52, cell[i].y + 3, 46, 15 };
         bool hov = CheckCollisionPointRec(mouse, tg);
@@ -368,6 +406,7 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         DrawText("Display", panel_x + 12, (int)y, 14, GRAY); y += 22;
         slider_row(panel_x, y, sw, "Bin resolution", TextFormat("%d", (int)d->f_nbins), &d->f_nbins, 20, 200); y += 26;
         DrawText("(applies on next Run)", panel_x + 14, (int)y, 10, (Color){120,100,60,255}); y += 18;
+        GuiCheckBox((Rectangle){panel_x + 12, y, 20, 20}, "Autoscale X (fit data)", &d->autoscale_x); y += 26;
         DrawText("Click \"Y:log/lin\" on a plot to toggle", panel_x + 14, (int)y, 10, GRAY); y += 22;
     }
     y += 6;
