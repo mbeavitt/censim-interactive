@@ -36,3 +36,6 @@ build/
 bin/
 *.o
 .DS_Store
+
+# CPU profiles
+*.prof
