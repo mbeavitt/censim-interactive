@@ -236,7 +236,8 @@ void dashboard_init(Dashboard *d) {
     d->f_indel_rate  = DEFAULT_INDEL_RATE;
     d->f_snp_rate    = DEFAULT_SNP_RATE;
     d->f_indel_size  = DEFAULT_INDEL_SIZE_LAMBDA;
-    d->unbounded     = true;
+    d->elastic       = false;   // free drift by default
+    d->f_elasticity  = 0.15f;
     d->f_nbins       = 50.0f;
     d->autoscale_x   = true;
     d->show_advanced = false;
@@ -259,12 +260,13 @@ static void launch(Dashboard *d) {
     if (d->has_batch) { batch_free(&d->batch); d->has_batch = false; }
 
     SimParams p;
-    batch_default_params(&p, d->unbounded);
+    batch_default_params(&p, true);  // start from unbounded; add elastic pull below if enabled
     p.indel_rate        = d->f_indel_rate;
     p.snp_rate          = d->f_snp_rate;
     p.indel_size_lambda = d->f_indel_size;
     p.collapse_threshold = (int)d->f_collapse;
-    p.target_size       = (int)d->f_initial;  // elastic mode pulls toward start size
+    p.target_size       = (int)d->f_initial;          // elastic pulls toward start size
+    p.elasticity        = d->elastic ? d->f_elasticity : 0.0f;
 
     BatchConfig cfg;
     cfg.num_trajectories   = (int)d->f_num_traj;
@@ -391,7 +393,12 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     slider_row(panel_x, y, sw, "Trajectories", TextFormat("%d", (int)d->f_num_traj), &d->f_num_traj, 10, 500); y += 30;
     slider_row(panel_x, y, sw, "Start size", TextFormat("%d", (int)d->f_initial), &d->f_initial, 1000, 20000); y += 30;
     slider_row(panel_x, y, sw, "Generations", TextFormat("%.1fM", d->f_target_gens/1e6f), &d->f_target_gens, 100000, 6000000); y += 32;
-    GuiCheckBox((Rectangle){panel_x + 12, y, 20, 20}, "Unbounded", &d->unbounded); y += 34;
+    GuiCheckBox((Rectangle){panel_x + 12, y, 20, 20}, "Elastic bounds", &d->elastic); y += 30;
+    if (d->elastic) {
+        slider_row(panel_x, y, sw, "Bound strength", TextFormat("%.2f", d->f_elasticity),
+                   &d->f_elasticity, 0.0f, 1.0f); y += 30;
+    }
+    y += 4;
 
     bool busy = d->has_batch && (running || stopping);
     if (stopping) {

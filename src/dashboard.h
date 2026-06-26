@@ -17,7 +17,8 @@ typedef struct {
     float f_indel_rate;
     float f_snp_rate;
     float f_indel_size;
-    bool  unbounded;       // true = paper free-drift; false = elastic bounded
+    bool  elastic;         // false = free drift (default); true = elastic bounds toward start size
+    float f_elasticity;    // elastic pull strength (when elastic enabled)
 
     float f_nbins;         // histogram bin resolution (applied on next Run)
     bool  plot_log_y[6];   // per-plot log-scale Y toggle
