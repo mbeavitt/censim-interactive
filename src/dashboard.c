@@ -388,7 +388,7 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     slider_row(panel_x, y, sw, "Trajectories", TextFormat("%d", (int)d->f_num_traj), &d->f_num_traj, 10, 500); y += 30;
     slider_row(panel_x, y, sw, "Start size", TextFormat("%d", (int)d->f_initial), &d->f_initial, 1000, 20000); y += 30;
     slider_row(panel_x, y, sw, "Generations", TextFormat("%.1fM", d->f_target_gens/1e6f), &d->f_target_gens, 100000, 6000000); y += 32;
-    GuiCheckBox((Rectangle){panel_x + 12, y, 20, 20}, "Unbounded (paper drift)", &d->unbounded); y += 34;
+    GuiCheckBox((Rectangle){panel_x + 12, y, 20, 20}, "Unbounded", &d->unbounded); y += 34;
 
     bool busy = d->has_batch && (running || stopping);
     if (stopping) {
