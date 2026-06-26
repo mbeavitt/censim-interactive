@@ -111,21 +111,16 @@ static float val_frac(float v, float lo, float hi, int log_scale) {
     return (x - lo) / (hi - lo);
 }
 
-// Choose the displayed bin window [b0,b1]. With autoscale, trim the extreme 0.5%
-// of in-range counts from each tail (captures ~99% of the data, robust to a lone
-// outlier stretching the axis); otherwise show the full fixed range.
+// Choose the displayed bin window [b0,b1]. With autoscale, fit to the full span of
+// populated bins (first to last non-empty) -- no tail trimming, since simulated
+// data doesn't throw the wild outliers that would warrant it. Otherwise show the
+// full fixed range.
 static void window_bins(const HistSnap *s, int autoscale, int *b0, int *b1) {
     *b0 = 0; *b1 = s->nbins - 1;
     if (!autoscale) return;
-    long inrange = 0;
-    for (int i = 0; i < s->nbins; i++) inrange += s->counts[i];
-    if (inrange == 0) return;
-    long lo_t = (long)(inrange * 0.005), hi_t = (long)(inrange * 0.995);
-    long cum = 0; int lo = 0, hi = s->nbins - 1;
-    for (int i = 0; i < s->nbins; i++) { cum += s->counts[i]; if (cum > lo_t) { lo = i; break; } }
-    cum = 0;
-    for (int i = 0; i < s->nbins; i++) { cum += s->counts[i]; if (cum >= hi_t) { hi = i; break; } }
-    if (hi < lo) hi = lo;
+    int lo = -1, hi = -1;
+    for (int i = 0; i < s->nbins; i++) if (s->counts[i] > 0) { if (lo < 0) lo = i; hi = i; }
+    if (lo < 0) return;  // no in-range data; keep full range
     *b0 = lo; *b1 = hi;
 }
 
