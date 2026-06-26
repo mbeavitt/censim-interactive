@@ -190,14 +190,13 @@ void dashboard_init(Dashboard *d) {
     d->show_advanced = false;
     d->has_batch     = false;
     d->started       = false;
-    // Per-plot log-Y defaults matching the paper: log on the count plots
-    // (HORs/kb, block size, gap, composite), linear on unique/kb & similarity.
-    d->plot_log_y[0] = false;  // unique/kb
-    d->plot_log_y[1] = true;   // HORs/kb
-    d->plot_log_y[2] = true;   // block size
-    d->plot_log_y[3] = true;   // block gap
-    d->plot_log_y[4] = false;  // similarity
-    d->plot_log_y[5] = true;   // composite
+    // Per-plot log-Y defaults (left->right, top->bottom): lin lin log / lin log lin
+    d->plot_log_y[0] = false;  // unique/kb   lin
+    d->plot_log_y[1] = false;  // HORs/kb     lin
+    d->plot_log_y[2] = true;   // block size  log
+    d->plot_log_y[3] = false;  // block gap   lin
+    d->plot_log_y[4] = true;   // similarity  log
+    d->plot_log_y[5] = false;  // composite   lin
 }
 
 void dashboard_free(Dashboard *d) {
