@@ -38,6 +38,7 @@ struct SimParams {
     int min_array_size;
     int max_array_size;
     bool bounding_enabled;
+    int collapse_threshold;  // array collapses when num_units drops below this (independent of hard bounds)
     // Elastic bounding
     int target_size;
     float elasticity;  // 0 = no effect, higher = stronger pull toward target
@@ -63,10 +64,11 @@ struct Simulation {
     RepeatArray array;
     SimParams params;
     SimStats stats;
+    unsigned int rng_state;  // Per-trajectory RNG state (thread-safe, independent)
 };
 
 // Public API
-void sim_init(Simulation *sim, int initial_size);
+void sim_init(Simulation *sim, int initial_size, unsigned int seed);
 void sim_free(Simulation *sim);
 void sim_step(Simulation *sim);
 void sim_run(Simulation *sim, int generations);

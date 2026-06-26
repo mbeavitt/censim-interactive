@@ -9,30 +9,29 @@
 // Random number generation
 // ============================================================================
 
-static unsigned int rng_state = 42;
-
-static void rng_seed(unsigned int seed) {
-    rng_state = seed;
-}
+// RNG state is per-trajectory (carried in Simulation, passed by pointer) so that
+// trajectories run independently across threads with no shared mutable state.
 
 // Xorshift32
-static unsigned int rng_next(void) {
-    rng_state ^= rng_state << 13;
-    rng_state ^= rng_state >> 17;
-    rng_state ^= rng_state << 5;
-    return rng_state;
+static unsigned int rng_next(unsigned int *state) {
+    unsigned int x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    return x;
 }
 
-static float rng_float(void) {
-    return (float)(rng_next() & 0x7FFFFFFF) / (float)0x7FFFFFFF;
+static float rng_float(unsigned int *state) {
+    return (float)(rng_next(state) & 0x7FFFFFFF) / (float)0x7FFFFFFF;
 }
 
-static int rng_int(int max) {
-    return (int)(rng_next() % (unsigned int)max);
+static int rng_int(unsigned int *state, int max) {
+    return (int)(rng_next(state) % (unsigned int)max);
 }
 
 // Poisson sampling using inverse transform
-static int sample_poisson(float lambda) {
+static int sample_poisson(unsigned int *state, float lambda) {
     if (lambda <= 0) return 0;
 
     float L = expf(-lambda);
@@ -41,7 +40,7 @@ static int sample_poisson(float lambda) {
 
     do {
         k++;
-        p *= rng_float();
+        p *= rng_float(state);
     } while (p > L);
 
     return k - 1;
@@ -49,11 +48,11 @@ static int sample_poisson(float lambda) {
 
 // Gamma sampling using Marsaglia and Tsang's method
 // Used internally for negative binomial
-static float sample_gamma(float shape, float scale) {
+static float sample_gamma(unsigned int *state, float shape, float scale) {
     if (shape < 1.0f) {
         // For shape < 1, use shape+1 and then scale
-        float u = rng_float();
-        return sample_gamma(shape + 1.0f, scale) * powf(u, 1.0f / shape);
+        float u = rng_float(state);
+        return sample_gamma(state, shape + 1.0f, scale) * powf(u, 1.0f / shape);
     }
 
     float d = shape - 1.0f / 3.0f;
@@ -63,14 +62,14 @@ static float sample_gamma(float shape, float scale) {
         float x, v;
         do {
             // Box-Muller for standard normal
-            float u1 = rng_float();
-            float u2 = rng_float();
+            float u1 = rng_float(state);
+            float u2 = rng_float(state);
             x = sqrtf(-2.0f * logf(u1 + 1e-10f)) * cosf(2.0f * 3.14159265f * u2);
             v = 1.0f + c * x;
         } while (v <= 0.0f);
 
         v = v * v * v;
-        float u = rng_float();
+        float u = rng_float(state);
 
         if (u < 1.0f - 0.0331f * x * x * x * x) {
             return d * v * scale;
@@ -86,25 +85,25 @@ static float sample_gamma(float shape, float scale) {
 // Models overdispersed count data (variance > mean)
 // Mean = mu, Variance = mu + mu^2/dispersion
 // Higher dispersion = more overdispersion
-static int sample_negative_binomial(float mu, float dispersion) {
+static int sample_negative_binomial(unsigned int *state, float mu, float dispersion) {
     if (mu <= 0) return 0;
-    if (dispersion <= 0) return sample_poisson(mu);  // Fall back to Poisson
+    if (dispersion <= 0) return sample_poisson(state, mu);  // Fall back to Poisson
 
     // NB as Gamma-Poisson mixture
     // r = dispersion, p = dispersion/(dispersion + mu)
     float r = dispersion;
-    float lambda = sample_gamma(r, mu / r);
-    return sample_poisson(lambda);
+    float lambda = sample_gamma(state, r, mu / r);
+    return sample_poisson(state, lambda);
 }
 
 // Geometric sampling (number of failures before first success)
 // Mean = (1-p)/p, so p = 1/(1+mean)
 // Models exponentially decaying probability - small values more likely
-static int sample_geometric(float mean) {
+static int sample_geometric(unsigned int *state, float mean) {
     if (mean <= 0) return 1;
 
     float p = 1.0f / (1.0f + mean);
-    float u = rng_float();
+    float u = rng_float(state);
 
     // Inverse transform: floor(log(u) / log(1-p))
     int result = (int)(logf(u + 1e-10f) / logf(1.0f - p + 1e-10f));
@@ -115,7 +114,7 @@ static int sample_geometric(float mean) {
 // P(X >= x) ~ x^(-alpha), heavy tailed
 // Mean parameter controls the scale (x_min), alpha controls tail heaviness
 // Small events common, but occasional large events occur
-static int sample_power_law(float mean, float alpha) {
+static int sample_power_law(unsigned int *state, float mean, float alpha) {
     if (mean <= 0) return 1;
     if (alpha <= 1.0f) alpha = 1.1f;  // Must be > 1 for finite mean
 
@@ -124,7 +123,7 @@ static int sample_power_law(float mean, float alpha) {
     float x_min = mean * (alpha - 1.0f) / alpha;
     if (x_min < 1.0f) x_min = 1.0f;
 
-    float u = rng_float();
+    float u = rng_float(state);
 
     // Inverse transform: x = x_min * (1 - u)^(-1/alpha)
     int result = (int)(x_min * powf(1.0f - u + 1e-10f, -1.0f / alpha));
@@ -135,25 +134,25 @@ static int sample_power_law(float mean, float alpha) {
 // Distribution dispatch helpers
 // ============================================================================
 
-static int sample_count(CountDistribution dist, float mean, float dispersion) {
+static int sample_count(unsigned int *state, CountDistribution dist, float mean, float dispersion) {
     switch (dist) {
         case DIST_NEGATIVE_BINOMIAL:
-            return sample_negative_binomial(mean, dispersion);
+            return sample_negative_binomial(state, mean, dispersion);
         case DIST_POISSON:
         default:
-            return sample_poisson(mean);
+            return sample_poisson(state, mean);
     }
 }
 
-static int sample_size(SizeDistribution dist, float mean, float power_law_alpha) {
+static int sample_size(unsigned int *state, SizeDistribution dist, float mean, float power_law_alpha) {
     switch (dist) {
         case SIZE_GEOMETRIC:
-            return sample_geometric(mean);
+            return sample_geometric(state, mean);
         case SIZE_POWER_LAW:
-            return sample_power_law(mean, power_law_alpha);
+            return sample_power_law(state, mean, power_law_alpha);
         case SIZE_POISSON:
         default: {
-            int s = sample_poisson(mean);
+            int s = sample_poisson(state, mean);
             return s < 1 ? 1 : s;
         }
     }
@@ -198,37 +197,86 @@ static char *alloc_unit(const char *src) {
     return unit;
 }
 
-// Tandem duplication: duplicate units[start:end] in place after end
-static void duplicate_units(RepeatArray *arr, int start, int end) {
-    int count = end - start;
-    array_ensure_capacity(arr, arr->num_units + count);
+// Replace units[start:end) with `n_new` fresh units carved from `seq` (n_new *
+// REPEAT_SIZE bytes). Frees the old units, shifts the tail, inserts the new ones.
+// `seq` may be NULL when n_new == 0 (pure deletion).
+static void replace_units_range(RepeatArray *arr, int start, int end,
+                                const char *seq, int n_new) {
+    int n_old = end - start;
+    int delta = n_new - n_old;
 
-    // Shift everything after 'end' to make room
-    memmove(&arr->units[end + count], &arr->units[end],
+    for (int i = start; i < end; i++) free(arr->units[i]);
+
+    if (delta > 0) array_ensure_capacity(arr, arr->num_units + delta);
+
+    // Shift the tail [end, num_units) to [start + n_new, ...)
+    memmove(&arr->units[start + n_new], &arr->units[end],
             (arr->num_units - end) * sizeof(char *));
 
-    // Copy the units
-    for (int i = 0; i < count; i++) {
-        arr->units[end + i] = alloc_unit(arr->units[start + i]);
+    for (int i = 0; i < n_new; i++) {
+        arr->units[start + i] = alloc_unit(seq + (size_t)i * REPEAT_SIZE);
     }
 
-    arr->num_units += count;
+    arr->num_units += delta;
 }
 
-// Delete units[start:end]
-static void delete_units(RepeatArray *arr, int start, int end) {
-    int count = end - start;
-
-    // Free the deleted units
-    for (int i = start; i < end; i++) {
-        free(arr->units[i]);
+// Copy base-pair range [a, b) out of the unit array into dst. Returns bytes written.
+static long gather_bytes(char *dst, char **units, long a, long b) {
+    long w = 0;
+    while (a < b) {
+        int u = (int)(a / REPEAT_SIZE);
+        int off = (int)(a % REPEAT_SIZE);
+        int n = REPEAT_SIZE - off;
+        if ((long)n > b - a) n = (int)(b - a);
+        memcpy(dst + w, units[u] + off, n);
+        w += n; a += n;
     }
+    return w;
+}
 
-    // Shift remaining units
-    memmove(&arr->units[start], &arr->units[end],
-            (arr->num_units - end) * sizeof(char *));
+// Tandem duplication of the base-pair window [char_start, char_end) (size a
+// multiple of REPEAT_SIZE). char_start may be mid-unit, so re-splitting the
+// rebuilt region on the REPEAT_SIZE grid produces chimeric units at the junctions
+// -- mirrors censim's duplicate_at_position (the source of recombination diversity).
+static void duplicate_at_position(RepeatArray *arr, long char_start, long char_end) {
+    const int rs = REPEAT_SIZE;
+    int unit_start = (int)(char_start / rs);
+    int unit_end   = (int)((char_end + rs - 1) / rs);   // ceiling: last affected unit + 1
+    long region_lo = (long)unit_start * rs;
+    long region_hi = (long)unit_end * rs;
+    long new_len = (region_hi - region_lo) + (char_end - char_start);  // multiple of rs
 
-    arr->num_units -= count;
+    char *buf = (char *)malloc(new_len);
+    long w = 0;
+    w += gather_bytes(buf + w, arr->units, region_lo, char_end);   // before + original segment
+    w += gather_bytes(buf + w, arr->units, char_start, char_end);  // tandem copy
+    w += gather_bytes(buf + w, arr->units, char_end, region_hi);   // after
+
+    replace_units_range(arr, unit_start, unit_end, buf, (int)(new_len / rs));
+    free(buf);
+}
+
+// Delete the base-pair window [char_start, char_end) (size a multiple of
+// REPEAT_SIZE). Mid-unit endpoints merge into one chimeric unit. Mirrors censim's
+// delete_at_position.
+static void delete_at_position(RepeatArray *arr, long char_start, long char_end) {
+    const int rs = REPEAT_SIZE;
+    int unit_start = (int)(char_start / rs);
+    int unit_end   = (int)((char_end + rs - 1) / rs);   // ceiling
+    long region_lo = (long)unit_start * rs;
+    long region_hi = (long)unit_end * rs;
+    long new_len = (region_hi - region_lo) - (char_end - char_start);  // multiple of rs
+
+    if (new_len == 0) {
+        replace_units_range(arr, unit_start, unit_end, NULL, 0);
+        return;
+    }
+    char *buf = (char *)malloc(new_len);
+    long w = 0;
+    w += gather_bytes(buf + w, arr->units, region_lo, char_start);  // kept head
+    w += gather_bytes(buf + w, arr->units, char_end, region_hi);    // kept tail
+    replace_units_range(arr, unit_start, unit_end, buf, (int)(new_len / rs));
+    free(buf);
 }
 
 // ============================================================================
@@ -236,14 +284,15 @@ static void delete_units(RepeatArray *arr, int start, int end) {
 // ============================================================================
 
 static void apply_snps(Simulation *sim) {
-    int n_snps = sample_count(sim->params.count_dist, sim->params.snp_rate, sim->params.nb_dispersion);
+    unsigned int *rng = &sim->rng_state;
+    int n_snps = sample_count(rng, sim->params.count_dist, sim->params.snp_rate, sim->params.nb_dispersion);
 
     for (int i = 0; i < n_snps; i++) {
         if (sim->array.num_units == 0) break;
 
         // Pick random unit and position
-        int unit_idx = rng_int(sim->array.num_units);
-        int pos = rng_int(REPEAT_SIZE);
+        int unit_idx = rng_int(rng, sim->array.num_units);
+        int pos = rng_int(rng, REPEAT_SIZE);
 
         char *unit = sim->array.units[unit_idx];
         char old_base = unit[pos];
@@ -251,7 +300,7 @@ static void apply_snps(Simulation *sim) {
         // Pick a different base
         char new_base;
         do {
-            new_base = BASES[rng_int(4)];
+            new_base = BASES[rng_int(rng, 4)];
         } while (new_base == old_base);
 
         unit[pos] = new_base;
@@ -260,7 +309,8 @@ static void apply_snps(Simulation *sim) {
 }
 
 static void apply_indels(Simulation *sim) {
-    int n_indels = sample_count(sim->params.count_dist, sim->params.indel_rate, sim->params.nb_dispersion);
+    unsigned int *rng = &sim->rng_state;
+    int n_indels = sample_count(rng, sim->params.count_dist, sim->params.indel_rate, sim->params.nb_dispersion);
 
     for (int i = 0; i < n_indels; i++) {
         if (sim->array.num_units == 0) {
@@ -283,41 +333,47 @@ static void apply_indels(Simulation *sim) {
         }
 
         // Choose duplication or deletion based on biased probability
-        bool is_dup = rng_float() < dup_prob;
+        bool is_dup = rng_float(rng) < dup_prob;
 
-        // Sample size using selected distribution
-        int indel_size = sample_size(sim->params.size_dist, sim->params.indel_size_lambda, sim->params.power_law_alpha);
+        // Sample size in repeat units (>=1), then convert to base pairs. The event
+        // size is a whole multiple of REPEAT_SIZE so the frame is preserved, but the
+        // START is an arbitrary base position (mid-unit), which produces chimeric
+        // units at the junctions -- this is the dominant source of sequence
+        // diversity, matching censim's arbitrary-position indels.
+        int indel_units = sample_size(rng, sim->params.size_dist, sim->params.indel_size_lambda, sim->params.power_law_alpha);
 
-        // Pick start position
-        int start = rng_int(sim->array.num_units);
-        int end = start + indel_size;
+        long total_bp = (long)sim->array.num_units * REPEAT_SIZE;
+        long char_start = rng_int(rng, (int)total_bp);
+        long char_end = char_start + (long)indel_units * REPEAT_SIZE;
 
-        // Bounds check
-        if (end > sim->array.num_units) {
-            continue;  // Skip this INDEL
+        // Out of bounds: can't place the event (array too small for this size). Skip.
+        if (char_end >= total_bp) {
+            continue;
         }
 
         if (is_dup) {
             // Check max size
             if (sim->params.bounding_enabled &&
-                sim->array.num_units + indel_size > sim->params.max_array_size) {
+                sim->array.num_units + indel_units > sim->params.max_array_size) {
                 continue;
             }
-            duplicate_units(&sim->array, start, end);
+            duplicate_at_position(&sim->array, char_start, char_end);
             sim->stats.dup_count++;
         } else {
             // Check min size
             if (sim->params.bounding_enabled &&
-                sim->array.num_units - indel_size < sim->params.min_array_size) {
+                sim->array.num_units - indel_units < sim->params.min_array_size) {
                 continue;
             }
-            delete_units(&sim->array, start, end);
+            delete_at_position(&sim->array, char_start, char_end);
             sim->stats.del_count++;
         }
     }
 
-    // Check for collapse
-    if (sim->array.num_units < sim->params.min_array_size) {
+    // Check for collapse (independent of hard bounds; with hard bounds enabled the
+    // array can't drop below min_array_size so this won't fire, matching the paper's
+    // unbounded drift-to-collapse behaviour when bounding is off).
+    if (sim->array.num_units < sim->params.collapse_threshold) {
         sim->stats.collapsed = true;
     }
 }
@@ -326,8 +382,9 @@ static void apply_indels(Simulation *sim) {
 // Public API
 // ============================================================================
 
-void sim_init(Simulation *sim, int initial_size) {
-    rng_seed((unsigned int)time(NULL));
+void sim_init(Simulation *sim, int initial_size, unsigned int seed) {
+    // Seed per-trajectory RNG. Avoid 0 (xorshift fixed point).
+    sim->rng_state = seed ? seed : 0x9E3779B9u;
 
     // Initialize array
     array_init(&sim->array, initial_size * 2);  // Extra capacity
@@ -345,6 +402,7 @@ void sim_init(Simulation *sim, int initial_size) {
     sim->params.min_array_size = DEFAULT_MIN_ARRAY_SIZE;
     sim->params.max_array_size = DEFAULT_MAX_ARRAY_SIZE;
     sim->params.bounding_enabled = true;
+    sim->params.collapse_threshold = DEFAULT_COLLAPSE_THRESHOLD;
     sim->params.target_size = DEFAULT_TARGET_SIZE;
     sim->params.elasticity = DEFAULT_ELASTICITY;
     sim->params.dup_bias = 0.5f;  // Equal dup/del by default

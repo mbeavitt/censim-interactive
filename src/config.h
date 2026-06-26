@@ -5,9 +5,11 @@
 #define REPEAT_SIZE 178
 
 // Default simulation parameters
-#define DEFAULT_INITIAL_SIZE 10000
+#define DEFAULT_INITIAL_SIZE 10000              // single interactive view
+#define DEFAULT_TRAJECTORY_INITIAL_SIZE 15000   // multi-trajectory view (matches paper)
 #define DEFAULT_MIN_ARRAY_SIZE 300
 #define DEFAULT_MAX_ARRAY_SIZE 50000
+#define DEFAULT_COLLAPSE_THRESHOLD 300          // array collapses below this many units (paper: report says 2000)
 
 #define DEFAULT_INDEL_RATE 0.5f
 #define DEFAULT_INDEL_SIZE_LAMBDA 7.6f

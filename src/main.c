@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 
 #include <raylib.h>
 
@@ -228,6 +229,7 @@ static void get_umap_command(char *cmd, size_t cmd_size, const char *fasta_path,
 #include "config.h"
 #include "simulation.h"
 #include "colorizer.h"
+#include "dashboard.h"
 
 // ============================================================================
 // Grid rendering
@@ -333,7 +335,7 @@ int main(void) {
 
     // Initialize simulation
     Simulation sim;
-    sim_init(&sim, DEFAULT_INITIAL_SIZE);
+    sim_init(&sim, DEFAULT_INITIAL_SIZE, (unsigned int)time(NULL));
 
     // Initialize colorizer
     Colorizer colorizer;
@@ -357,6 +359,11 @@ int main(void) {
     int mc_panel_height = 180;
     bool count_dist_edit = false;  // Dropdown state
     bool size_dist_edit = false;   // Dropdown state
+
+    // App mode: 0 = single-trajectory view, 1 = multi-trajectory dashboard
+    int app_mode = 0;
+    Dashboard dash;
+    dashboard_init(&dash);
 
     // raygui style
     GuiSetStyle(DEFAULT, TEXT_SIZE, 16);
@@ -398,8 +405,8 @@ int main(void) {
             printf("Grid width changed: %d tiles\n", grid_width);
         }
 
-        // Update simulation
-        if (running && !sim.stats.collapsed) {
+        // Update simulation (single-view only)
+        if (app_mode == 0 && running && !sim.stats.collapsed) {
             sim_run(&sim, (int)gens_per_frame);
 
             // Record stats for mission control
@@ -416,6 +423,18 @@ int main(void) {
         // Drawing
         BeginDrawing();
         ClearBackground((Color){30, 30, 35, 255});
+
+        // Mode toggle button (top center, above the grid area)
+        Rectangle toggle_rect = { (float)(screen_width - PANEL_WIDTH) / 2 - 80, 6, 160, 28 };
+
+        // Dashboard mode: draw it and skip the single-trajectory view entirely
+        if (app_mode == 1) {
+            dashboard_update_draw(&dash, screen_width, screen_height, PANEL_WIDTH);
+            if (GuiButton(toggle_rect, "#185# Single View")) app_mode = 0;
+            DrawFPS(screen_width - 90, 6);
+            EndDrawing();
+            continue;
+        }
 
         // Draw grid
         draw_grid(&sim, &colorizer, 10, 10, grid_width);
@@ -828,10 +847,14 @@ int main(void) {
             mc_minimized = !mc_minimized;
         }
 
+        // Mode toggle to enter the multi-trajectory dashboard (drawn on top)
+        if (GuiButton(toggle_rect, "#191# Dashboard")) app_mode = 1;
+
         EndDrawing();
     }
 
     // Cleanup
+    dashboard_free(&dash);
     sim_free(&sim);
     colorizer_free(&colorizer);
     CloseWindow();
