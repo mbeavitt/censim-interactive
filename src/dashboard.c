@@ -542,11 +542,15 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         slider_row(panel_x, y, sw, "Collapse <", TextFormat("%d", (int)d->f_collapse), &d->f_collapse, 0, 5000); y += 30;
         DrawText("Mutation", panel_x + 12, (int)y, 14, GRAY); y += 22;
         slider_row(panel_x, y, sw, "INDEL rate", TextFormat("%.2f", d->f_indel_rate), &d->f_indel_rate, 0.0f, 3.0f); y += 30;
-        slider_row(panel_x, y, sw, "INDEL size", TextFormat("%.1f", d->f_indel_size), &d->f_indel_size, 1.0f, 100.0f); y += 30;
-        // Dup/del size ratio: log slider centred at 1.0 (e in [-1,1] -> r in [0.1,10]).
+        slider_row(panel_x, y, sw, "Mean size", TextFormat("%.1f", d->f_indel_size), &d->f_indel_size, 1.0f, 100.0f); y += 30;
+        // Size ratio = dup:del mean-size ratio. Log slider centred at 1.0 (e in
+        // [-1,1] -> r in [0.1,10]); derived dup/del sizes shown beneath.
         float ratio_e = log10f(d->f_size_ratio);
-        slider_row(panel_x, y, sw, "Dup/del size", TextFormat("%.2fx", d->f_size_ratio), &ratio_e, -1.0f, 1.0f);
-        d->f_size_ratio = powf(10.0f, ratio_e); y += 30;
+        slider_row(panel_x, y, sw, "Size ratio", TextFormat("%.2fx", d->f_size_ratio), &ratio_e, -1.0f, 1.0f);
+        d->f_size_ratio = powf(10.0f, ratio_e); y += 28;
+        float dd_sr = sqrtf(d->f_size_ratio);
+        DrawText(TextFormat("dup ~%.1f / del ~%.1f units", d->f_indel_size * dd_sr, d->f_indel_size / dd_sr),
+                 panel_x + 14, (int)y, 10, (Color){90, 120, 90, 255}); y += 18;
         slider_row(panel_x, y, sw, "SNP rate", TextFormat("%.2f", d->f_snp_rate), &d->f_snp_rate, 0.0f, 1.0f); y += 32;
         DrawText("Display", panel_x + 12, (int)y, 14, GRAY); y += 22;
         slider_row(panel_x, y, sw, "Display bars", TextFormat("%d", (int)d->f_nbins), &d->f_nbins, 16, 120); y += 26;

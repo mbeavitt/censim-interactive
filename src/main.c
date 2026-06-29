@@ -445,7 +445,7 @@ int main(void) {
         Vector2 mouse = GetMousePosition();
 
         // Calculate content height (approximate based on controls)
-        int content_height = 795;  // Base height (incl. dup/del size ratio row)
+        int content_height = 815;  // Base height (incl. size ratio row + derived readout)
         if (show_advanced) {
             content_height += 170;
             if (sim.params.count_dist == DIST_NEGATIVE_BINOMIAL) content_height += 26;
@@ -557,23 +557,25 @@ int main(void) {
         }
         btn_y += row_h;
 
-        // INDEL size
+        // Mean indel size (central / geometric-mean event size in repeat units;
+        // the dup/del split is set by Size ratio below).
         Rectangle size_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h};
-        DrawText("INDEL size:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
+        DrawText("Mean size:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
         GuiSlider(
             (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
             NULL, TextFormat("%.1f", sim.params.indel_size_lambda),
             &sim.params.indel_size_lambda, 1.0f, 100.0f);
         if (CheckCollisionPointRec(mouse, size_row)) {
-            hover_text = "Mean (central) repeat units per INDEL event";
+            hover_text = "Mean indel event size in repeat units (split into dup/del by Size ratio)";
             hover_rect = size_row;
         }
         btn_y += row_h;
 
-        // Dup/del size ratio. Log slider centred at 1.0 (e in [-1,1] -> r in
-        // [0.1, 10]); r splits the mean size as dup~lambda*sqrt(r), del~lambda/sqrt(r).
+        // Size ratio = dup mean size : del mean size. Log slider centred at 1.0
+        // (e in [-1,1] -> r in [0.1, 10]); r splits the mean as dup~mean*sqrt(r),
+        // del~mean/sqrt(r). The derived sizes are shown beneath so it's concrete.
         Rectangle ratio_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h};
-        DrawText("Dup/del size:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
+        DrawText("Size ratio:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
         float size_ratio_e = log10f(sim.params.dup_del_size_ratio);
         GuiSlider(
             (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
@@ -581,10 +583,18 @@ int main(void) {
             &size_ratio_e, -1.0f, 1.0f);
         sim.params.dup_del_size_ratio = powf(10.0f, size_ratio_e);
         if (CheckCollisionPointRec(mouse, ratio_row)) {
-            hover_text = "Mean dup size / mean del size (1 = equal; right = bigger dups)";
+            hover_text = "Dup mean size : del mean size (1 = equal; right = bigger dups)";
             hover_rect = ratio_row;
         }
         btn_y += row_h;
+
+        // Concrete dup/del mean sizes implied by (Mean size, Size ratio).
+        float dd_sr = sqrtf(sim.params.dup_del_size_ratio);
+        DrawText(TextFormat("dup ~%.1f   del ~%.1f units",
+                            sim.params.indel_size_lambda * dd_sr,
+                            sim.params.indel_size_lambda / dd_sr),
+                 panel_x + label_w + 20, btn_y - 2, 12, (Color){130, 160, 130, 255});
+        btn_y += 18;
 
         // SNP rate
         Rectangle snp_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h};
