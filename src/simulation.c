@@ -30,9 +30,22 @@ static int rng_int(unsigned int *state, int max) {
     return (int)(rng_next(state) % (unsigned int)max);
 }
 
-// Poisson sampling using inverse transform
+// Poisson sampling. Knuth's product method needs expf(-lambda), which underflows
+// to 0.0f for large lambda (~ >88) -- the loop then can't terminate correctly and
+// the result is biased/capped. Above ~30 the Poisson is well approximated by
+// Normal(lambda, lambda), so switch to that there: it keeps the mean exactly at
+// lambda (essential for the drift-free dup/del coupling) and is O(1) instead of
+// O(lambda).
 static int sample_poisson(unsigned int *state, float lambda) {
     if (lambda <= 0) return 0;
+
+    if (lambda > 30.0f) {
+        // Box-Muller standard normal, then scale to Normal(lambda, lambda).
+        float u1 = rng_float(state), u2 = rng_float(state);
+        float z = sqrtf(-2.0f * logf(u1 + 1e-10f)) * cosf(2.0f * 3.14159265f * u2);
+        int k = (int)(lambda + sqrtf(lambda) * z + 0.5f);  // round to nearest
+        return k < 0 ? 0 : k;
+    }
 
     float L = expf(-lambda);
     int k = 0;
@@ -151,10 +164,11 @@ static int sample_size(unsigned int *state, SizeDistribution dist, float mean, f
         case SIZE_POWER_LAW:
             return sample_power_law(state, mean, power_law_alpha);
         case SIZE_POISSON:
-        default: {
-            int s = sample_poisson(state, mean);
-            return s < 1 ? 1 : s;
-        }
+        default:
+            // No min-1 floor: a 0 is a no-op event (the caller skips it). Flooring
+            // to 1 would inflate the realized mean above `mean` -- worst for small
+            // means -- which is exactly what broke the drift-free dup/del balance.
+            return sample_poisson(state, mean);
     }
 }
 
@@ -321,15 +335,26 @@ static void apply_indels(Simulation *sim) {
         // Start with base dup/del bias
         float dup_prob = sim->params.dup_bias;
 
-        // Elastic bounding: further bias based on distance from target
+        // Elastic bounding: a restoring force toward target_size, applied in
+        // log-odds (logit) space so it shifts the dup:del frequency RATIO
+        // multiplicatively around the base bias and stays in (0,1) for free.
+        //
+        // The old form (dup_prob -= elasticity*deviation, then clamp to [0.05,0.95])
+        // breaks for extreme dup/del size ratios: the drift-free base bias is
+        // 1/(1+r), which tends to 0 or 1 as r -> inf or 0. The absolute clamp then
+        // pins dup_prob on the WRONG side of the balance point and the restoring
+        // force can never recover -> guaranteed collapse (small r) or runaway growth
+        // (large r). The logit form has no such limit: the base is preserved exactly
+        // at deviation 0 (so the coupling stays drift-free), and any push keeps a
+        // valid probability. The 4x factor matches the old linear response slope at
+        // the symmetric point (r = 1, base = 0.5).
         if (sim->params.elasticity > 0.0f) {
-            // How far are we from target? Positive = too big, negative = too small
             float deviation = (float)(sim->array.num_units - sim->params.target_size)
                             / (float)sim->params.target_size;
-            // Bias: when too big, reduce dup probability; when too small, increase it
-            dup_prob = dup_prob - sim->params.elasticity * deviation;
-            if (dup_prob < 0.05f) dup_prob = 0.05f;
-            if (dup_prob > 0.95f) dup_prob = 0.95f;
+            float base = dup_prob;
+            if (base < 1e-6f) base = 1e-6f; else if (base > 1.0f - 1e-6f) base = 1.0f - 1e-6f;
+            float logit = logf(base / (1.0f - base)) - 4.0f * sim->params.elasticity * deviation;
+            dup_prob = 1.0f / (1.0f + expf(-logit));
         }
 
         // Choose duplication or deletion based on biased probability
@@ -351,15 +376,21 @@ static void apply_indels(Simulation *sim) {
         // units at the junctions -- this is the dominant source of sequence
         // diversity, matching censim's arbitrary-position indels.
         int indel_units = sample_size(rng, sim->params.size_dist, size_mean, sim->params.power_law_alpha);
+        if (indel_units < 1) continue;  // 0-size = no-op; keeps E[size] == size_mean (drift-free coupling)
 
         long total_bp = (long)sim->array.num_units * REPEAT_SIZE;
-        long char_start = rng_int(rng, (int)total_bp);
-        long char_end = char_start + (long)indel_units * REPEAT_SIZE;
+        long span = (long)indel_units * REPEAT_SIZE;
 
-        // Out of bounds: can't place the event (array too small for this size). Skip.
-        if (char_end >= total_bp) {
-            continue;
-        }
+        // Place the whole event inside the array by drawing the start from the valid
+        // range, rather than drawing a uniform start and rejecting overruns. A
+        // reject-on-overrun has rejection probability proportional to event size, so
+        // it silently drops the *larger* of the two event types more often -- a
+        // size-dependent drift the dup/del frequency coupling cannot cancel. If the
+        // event is bigger than the whole array it just can't be placed (only happens
+        // near collapse, where it harmlessly acts as a floor).
+        if (span >= total_bp) continue;
+        long char_start = rng_int(rng, (int)(total_bp - span));
+        long char_end = char_start + span;
 
         if (is_dup) {
             // Check max size
