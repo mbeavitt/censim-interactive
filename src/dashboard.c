@@ -451,9 +451,11 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
                                top + margin + r * (gh + margin), gw, gh };
     }
 
+    // With elastic bounds on, trajectories rarely collapse, so the "(survivors)"
+    // qualifier on the per-array plots is just noise -- drop it in that mode.
     struct { const char *title; HistSnap *s; const char *metric; } plots[6] = {
-        {"UNIQUE REPEATS / kb (survivors)", &su, "unique_per_kb"},
-        {"HORs / kb (survivors)",           &sh, "hors_per_kb"},
+        {d->elastic ? "UNIQUE REPEATS / kb" : "UNIQUE REPEATS / kb (survivors)", &su, "unique_per_kb"},
+        {d->elastic ? "HORs / kb"           : "HORs / kb (survivors)",           &sh, "hors_per_kb"},
         {"HOR BLOCK SIZE",                  &bs, "block_size"},
         {"HOR BLOCK GAP",                   &bg, "block_gap"},
         {"HOR SIMILARITY",                  &si, "similarity"},
