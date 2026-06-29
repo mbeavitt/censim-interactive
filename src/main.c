@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+#include <math.h>
 
 #include <raylib.h>
 
@@ -444,7 +445,7 @@ int main(void) {
         Vector2 mouse = GetMousePosition();
 
         // Calculate content height (approximate based on controls)
-        int content_height = 760;  // Base height (reduced since checkbox moved)
+        int content_height = 795;  // Base height (incl. dup/del size ratio row)
         if (show_advanced) {
             content_height += 170;
             if (sim.params.count_dist == DIST_NEGATIVE_BINOMIAL) content_height += 26;
@@ -564,8 +565,24 @@ int main(void) {
             NULL, TextFormat("%.1f", sim.params.indel_size_lambda),
             &sim.params.indel_size_lambda, 1.0f, 100.0f);
         if (CheckCollisionPointRec(mouse, size_row)) {
-            hover_text = "Expected repeat units per INDEL event";
+            hover_text = "Mean (central) repeat units per INDEL event";
             hover_rect = size_row;
+        }
+        btn_y += row_h;
+
+        // Dup/del size ratio. Log slider centred at 1.0 (e in [-1,1] -> r in
+        // [0.1, 10]); r splits the mean size as dup~lambda*sqrt(r), del~lambda/sqrt(r).
+        Rectangle ratio_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h};
+        DrawText("Dup/del size:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
+        float size_ratio_e = log10f(sim.params.dup_del_size_ratio);
+        GuiSlider(
+            (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
+            NULL, TextFormat("%.2fx", sim.params.dup_del_size_ratio),
+            &size_ratio_e, -1.0f, 1.0f);
+        sim.params.dup_del_size_ratio = powf(10.0f, size_ratio_e);
+        if (CheckCollisionPointRec(mouse, ratio_row)) {
+            hover_text = "Mean dup size / mean del size (1 = equal; right = bigger dups)";
+            hover_rect = ratio_row;
         }
         btn_y += row_h;
 

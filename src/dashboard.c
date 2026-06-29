@@ -342,6 +342,7 @@ void dashboard_init(Dashboard *d) {
     d->f_indel_rate  = DEFAULT_INDEL_RATE;
     d->f_snp_rate    = DEFAULT_SNP_RATE;
     d->f_indel_size  = DEFAULT_INDEL_SIZE_LAMBDA;
+    d->f_size_ratio  = DEFAULT_DUP_DEL_SIZE_RATIO;
     d->elastic       = false;   // free drift by default
     d->f_elasticity  = 0.15f;
     d->f_nbins       = 50.0f;
@@ -382,6 +383,7 @@ static void launch(Dashboard *d) {
     p.indel_rate        = d->f_indel_rate;
     p.snp_rate          = d->f_snp_rate;
     p.indel_size_lambda = d->f_indel_size;
+    p.dup_del_size_ratio = d->f_size_ratio;
     p.collapse_threshold = (int)d->f_collapse;
     p.target_size       = (int)d->f_initial;          // elastic pulls toward start size
     p.elasticity        = d->elastic ? d->f_elasticity : 0.0f;
@@ -539,6 +541,10 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         DrawText("Mutation", panel_x + 12, (int)y, 14, GRAY); y += 22;
         slider_row(panel_x, y, sw, "INDEL rate", TextFormat("%.2f", d->f_indel_rate), &d->f_indel_rate, 0.0f, 3.0f); y += 30;
         slider_row(panel_x, y, sw, "INDEL size", TextFormat("%.1f", d->f_indel_size), &d->f_indel_size, 1.0f, 100.0f); y += 30;
+        // Dup/del size ratio: log slider centred at 1.0 (e in [-1,1] -> r in [0.1,10]).
+        float ratio_e = log10f(d->f_size_ratio);
+        slider_row(panel_x, y, sw, "Dup/del size", TextFormat("%.2fx", d->f_size_ratio), &ratio_e, -1.0f, 1.0f);
+        d->f_size_ratio = powf(10.0f, ratio_e); y += 30;
         slider_row(panel_x, y, sw, "SNP rate", TextFormat("%.2f", d->f_snp_rate), &d->f_snp_rate, 0.0f, 1.0f); y += 32;
         DrawText("Display", panel_x + 12, (int)y, 14, GRAY); y += 22;
         slider_row(panel_x, y, sw, "Display bars", TextFormat("%d", (int)d->f_nbins), &d->f_nbins, 16, 120); y += 26;

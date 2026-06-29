@@ -33,7 +33,8 @@ struct RepeatArray {
 // Simulation parameters
 struct SimParams {
     float indel_rate;
-    float indel_size_lambda;
+    float indel_size_lambda;     // central (geometric-mean) indel size in repeat units
+    float dup_del_size_ratio;    // dup:del mean-size ratio r; dup ~ lambda*sqrt(r), del ~ lambda/sqrt(r)
     float snp_rate;
     int min_array_size;
     int max_array_size;

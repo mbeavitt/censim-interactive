@@ -16,6 +16,7 @@ int batch_hardware_threads(void) {
 void batch_default_params(SimParams *p, bool unbounded) {
     p->indel_rate = DEFAULT_INDEL_RATE;          // Poisson 0.5
     p->indel_size_lambda = DEFAULT_INDEL_SIZE_LAMBDA;  // Poisson 7.6
+    p->dup_del_size_ratio = DEFAULT_DUP_DEL_SIZE_RATIO; // 1.0 = dup/del equal size
     p->snp_rate = DEFAULT_SNP_RATE;              // Poisson 0.1
     p->min_array_size = DEFAULT_MIN_ARRAY_SIZE;
     p->max_array_size = DEFAULT_MAX_ARRAY_SIZE;

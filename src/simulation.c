@@ -335,12 +335,22 @@ static void apply_indels(Simulation *sim) {
         // Choose duplication or deletion based on biased probability
         bool is_dup = rng_float(rng) < dup_prob;
 
+        // Split the mean event size between dups and dels by the size ratio r, kept
+        // log-symmetric around the central lambda: dup ~ lambda*sqrt(r), del ~
+        // lambda/sqrt(r). r == 1 leaves both at lambda (size-symmetric, the default).
+        float size_mean = sim->params.indel_size_lambda;
+        float ratio = sim->params.dup_del_size_ratio;
+        if (ratio > 0.0f && ratio != 1.0f) {
+            float sr = sqrtf(ratio);
+            size_mean = is_dup ? size_mean * sr : size_mean / sr;
+        }
+
         // Sample size in repeat units (>=1), then convert to base pairs. The event
         // size is a whole multiple of REPEAT_SIZE so the frame is preserved, but the
         // START is an arbitrary base position (mid-unit), which produces chimeric
         // units at the junctions -- this is the dominant source of sequence
         // diversity, matching censim's arbitrary-position indels.
-        int indel_units = sample_size(rng, sim->params.size_dist, sim->params.indel_size_lambda, sim->params.power_law_alpha);
+        int indel_units = sample_size(rng, sim->params.size_dist, size_mean, sim->params.power_law_alpha);
 
         long total_bp = (long)sim->array.num_units * REPEAT_SIZE;
         long char_start = rng_int(rng, (int)total_bp);
@@ -398,6 +408,7 @@ void sim_init(Simulation *sim, int initial_size, unsigned int seed) {
     // Default parameters
     sim->params.indel_rate = DEFAULT_INDEL_RATE;
     sim->params.indel_size_lambda = DEFAULT_INDEL_SIZE_LAMBDA;
+    sim->params.dup_del_size_ratio = DEFAULT_DUP_DEL_SIZE_RATIO;
     sim->params.snp_rate = DEFAULT_SNP_RATE;
     sim->params.min_array_size = DEFAULT_MIN_ARRAY_SIZE;
     sim->params.max_array_size = DEFAULT_MAX_ARRAY_SIZE;
