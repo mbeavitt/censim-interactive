@@ -378,19 +378,16 @@ int main(void) {
 
     // Main loop
     while (!WindowShouldClose()) {
-        // Toggle maximize: Cmd+F on macOS, F11 on Windows/Linux
+        // Toggle borderless fullscreen: Cmd+F on macOS, F11 on Windows/Linux.
+        // ToggleBorderlessWindowed() resizes the window to the monitor without a
+        // video-mode switch, so there's no resolution change or scaling artifacts
+        // (raylib remembers the prior geometry to restore on toggle-off).
 #ifdef __APPLE__
-        bool toggle_maximize = (IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER)) && IsKeyPressed(KEY_F);
+        bool toggle_fullscreen = (IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER)) && IsKeyPressed(KEY_F);
 #else
-        bool toggle_maximize = IsKeyPressed(KEY_F11);
+        bool toggle_fullscreen = IsKeyPressed(KEY_F11);
 #endif
-        if (toggle_maximize) {
-            if (IsWindowMaximized()) {
-                RestoreWindow();
-            } else {
-                MaximizeWindow();
-            }
-        }
+        if (toggle_fullscreen) ToggleBorderlessWindowed();
 
         // Get current screen dimensions
         int screen_width = GetScreenWidth();
@@ -481,9 +478,9 @@ int main(void) {
         DrawRectangle(panel_x, 0, PANEL_WIDTH, 65, (Color){25, 25, 30, 255});
         DrawText("Controls", panel_x + 20, 20, 24, WHITE);
 #ifdef __APPLE__
-        DrawText("(Cmd+F toggle maximize)", panel_x + 20, 48, 12, GRAY);
+        DrawText("(Cmd+F fullscreen)", panel_x + 20, 48, 12, GRAY);
 #else
-        DrawText("(F11 toggle maximize)", panel_x + 20, 48, 12, GRAY);
+        DrawText("(F11 fullscreen)", panel_x + 20, 48, 12, GRAY);
 #endif
         BeginScissorMode(panel_x, 65, PANEL_WIDTH, screen_height - 65);
 
