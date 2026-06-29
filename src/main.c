@@ -445,15 +445,11 @@ int main(void) {
         Vector2 mouse = GetMousePosition();
 
         // Calculate content height (approximate based on controls)
-        int content_height = 815;  // Base height (incl. size ratio row + derived readout)
+        int content_height = 830;  // Base height (incl. dup/del ratio row + 2-line readout)
         if (show_advanced) {
-            content_height += 170;
+            content_height += 150;  // advanced block (freq derived from Dup/del ratio; no bias row/warning)
             if (sim.params.count_dist == DIST_NEGATIVE_BINOMIAL) content_height += 26;
             if (sim.params.size_dist == SIZE_POWER_LAW) content_height += 26;
-            // Warning space
-            bool bias_warning = (sim.params.dup_bias < 0.49f || sim.params.dup_bias > 0.51f)
-                                && sim.params.elasticity > 0.0f;
-            if (bias_warning) content_height += 22;
         }
 
         // Max scroll is negative (scrolling down moves content up)
@@ -558,7 +554,7 @@ int main(void) {
         btn_y += row_h;
 
         // Mean indel size (central / geometric-mean event size in repeat units;
-        // the dup/del split is set by Size ratio below).
+        // the dup/del split is set by Dup/del ratio below).
         Rectangle size_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h};
         DrawText("Mean size:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
         GuiSlider(
@@ -566,35 +562,46 @@ int main(void) {
             NULL, TextFormat("%.1f", sim.params.indel_size_lambda),
             &sim.params.indel_size_lambda, 1.0f, 100.0f);
         if (CheckCollisionPointRec(mouse, size_row)) {
-            hover_text = "Mean indel event size in repeat units (split into dup/del by Size ratio)";
+            hover_text = "Mean indel event size in repeat units (split into dup/del by Dup/del ratio)";
             hover_rect = size_row;
         }
         btn_y += row_h;
 
-        // Size ratio = dup mean size : del mean size. Log slider centred at 1.0
-        // (e in [-1,1] -> r in [0.1, 10]); r splits the mean as dup~mean*sqrt(r),
-        // del~mean/sqrt(r). The derived sizes are shown beneath so it's concrete.
+        // Dup/del ratio: a single dup:del SIZE ratio r (log slider centred at 1.0,
+        // r in [0.001,1000]). Frequency is coupled to it -- dup_bias = 1/(1+r) -- so
+        // that P(dup)*size_dup == P(del)*size_del and the mean array length is held
+        // constant: bigger events are made proportionally rarer. The four derived
+        // quantities (dup/del size and rate) are shown beneath.
         Rectangle ratio_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h};
-        DrawText("Size ratio:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
+        DrawText("Dup/del ratio:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
         float size_ratio_e = log10f(sim.params.dup_del_size_ratio);
+        const char *rfmt = sim.params.dup_del_size_ratio < 1.0f ? "%.3fx"
+                         : sim.params.dup_del_size_ratio < 10.0f ? "%.2fx" : "%.0fx";
         GuiSlider(
             (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
-            NULL, TextFormat("%.2fx", sim.params.dup_del_size_ratio),
-            &size_ratio_e, -1.0f, 1.0f);
+            NULL, TextFormat(rfmt, sim.params.dup_del_size_ratio),
+            &size_ratio_e, -3.0f, 3.0f);
         sim.params.dup_del_size_ratio = powf(10.0f, size_ratio_e);
+        sim.params.dup_bias = 1.0f / (1.0f + sim.params.dup_del_size_ratio);  // coupled freq
         if (CheckCollisionPointRec(mouse, ratio_row)) {
-            hover_text = "Dup mean size : del mean size (1 = equal; right = bigger dups)";
+            hover_text = "Dup:del size ratio; frequency auto-balanced to hold array size (bigger = rarer)";
             hover_rect = ratio_row;
         }
         btn_y += row_h;
 
-        // Concrete dup/del mean sizes implied by (Mean size, Size ratio).
-        float dd_sr = sqrtf(sim.params.dup_del_size_ratio);
-        DrawText(TextFormat("dup ~%.1f   del ~%.1f units",
-                            sim.params.indel_size_lambda * dd_sr,
-                            sim.params.indel_size_lambda / dd_sr),
-                 panel_x + label_w + 20, btn_y - 2, 12, (Color){130, 160, 130, 255});
-        btn_y += 18;
+        // Four derived stats from (Mean size, INDEL rate, Dup/del ratio).
+        {
+            float r = sim.params.dup_del_size_ratio, sr = sqrtf(r);
+            float pdup = 1.0f / (1.0f + r);
+            DrawText(TextFormat("dup ~%.1f u  %.2f/gen", sim.params.indel_size_lambda * sr,
+                                sim.params.indel_rate * pdup),
+                     panel_x + label_w + 20, btn_y - 2, 12, (Color){130, 160, 130, 255});
+            btn_y += 14;
+            DrawText(TextFormat("del ~%.1f u  %.2f/gen", sim.params.indel_size_lambda / sr,
+                                sim.params.indel_rate * (1.0f - pdup)),
+                     panel_x + label_w + 20, btn_y - 2, 12, (Color){130, 160, 130, 255});
+            btn_y += 18;
+        }
 
         // SNP rate
         Rectangle snp_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h};
@@ -700,13 +707,9 @@ int main(void) {
 
         if (show_advanced) {
             // Calculate dynamic height based on visible parameter sliders
-            int adv_height = 165;
+            int adv_height = 145;
             if (sim.params.count_dist == DIST_NEGATIVE_BINOMIAL) adv_height += 26;
             if (sim.params.size_dist == SIZE_POWER_LAW) adv_height += 26;
-            // Extra space for warning if dup bias != 0.5 and elasticity > 0
-            bool show_bias_warning = (sim.params.dup_bias < 0.49f || sim.params.dup_bias > 0.51f)
-                                     && sim.params.elasticity > 0.0f;
-            if (show_bias_warning) adv_height += 22;
 
             DrawRectangle(panel_x + 10, btn_y, PANEL_WIDTH - 20, adv_height, (Color){40, 40, 40, 200});
 
@@ -726,26 +729,10 @@ int main(void) {
             if (CheckCollisionPointRec(mouse, step_row)) {
                 hover_text = "Generations per 'Step N' button click";
             }
-            adv_y += 32;
+            adv_y += 40;
 
-            // Dup/Del bias (own row)
-            Rectangle bias_row = {panel_x + 20, adv_y - 2, 370, 24};
-            DrawText("Dup/Del bias:", panel_x + 20, adv_y, 16, LIGHTGRAY);
-            GuiSlider((Rectangle){panel_x + 140, adv_y - 2, 200, 20}, NULL, NULL,
-                      &sim.params.dup_bias, 0.0f, 1.0f);
-            DrawText(TextFormat("%.0f%% dup", sim.params.dup_bias * 100), panel_x + 350, adv_y, 14, WHITE);
-            if (CheckCollisionPointRec(mouse, bias_row)) {
-                hover_text = "Base probability of duplication vs deletion";
-            }
-            adv_y += 24;
-
-            // Warning about interaction with elastic bounding
-            if (show_bias_warning) {
-                DrawText("! Interacts with elastic bounding", panel_x + 40, adv_y, 12, YELLOW);
-                adv_y += 22;
-            } else {
-                adv_y += 8;
-            }
+            // (Dup/del frequency is derived from the Dup/del ratio above to keep the
+            // mean array length constant, so there's no separate bias control here.)
 
             // Hard bounds checkbox
             Rectangle bounds_row = {panel_x + 20, adv_y, 300, 20};

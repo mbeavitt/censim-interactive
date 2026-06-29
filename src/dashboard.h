@@ -18,7 +18,7 @@ typedef struct {
     float f_indel_rate;
     float f_snp_rate;
     float f_indel_size;
-    float f_size_ratio;    // dup:del mean-size ratio (1 = equal)
+    float f_size_ratio;    // dup:del ratio: size split AND (inverse) frequency split, for zero net drift
     bool  elastic;         // false = free drift (default); true = elastic bounds toward start size
     float f_elasticity;    // elastic pull strength (when elastic enabled)
 

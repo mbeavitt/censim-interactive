@@ -384,6 +384,7 @@ static void launch(Dashboard *d) {
     p.snp_rate          = d->f_snp_rate;
     p.indel_size_lambda = d->f_indel_size;
     p.dup_del_size_ratio = d->f_size_ratio;
+    p.dup_bias          = 1.0f / (1.0f + d->f_size_ratio);  // coupled freq: bigger dups => rarer (zero net drift)
     p.collapse_threshold = (int)d->f_collapse;
     p.target_size       = (int)d->f_initial;          // elastic pulls toward start size
     p.elasticity        = d->elastic ? d->f_elasticity : 0.0f;
@@ -543,14 +544,22 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         DrawText("Mutation", panel_x + 12, (int)y, 14, GRAY); y += 22;
         slider_row(panel_x, y, sw, "INDEL rate", TextFormat("%.2f", d->f_indel_rate), &d->f_indel_rate, 0.0f, 3.0f); y += 30;
         slider_row(panel_x, y, sw, "Mean size", TextFormat("%.1f", d->f_indel_size), &d->f_indel_size, 1.0f, 100.0f); y += 30;
-        // Size ratio = dup:del mean-size ratio. Log slider centred at 1.0 (e in
-        // [-1,1] -> r in [0.1,10]); derived dup/del sizes shown beneath.
+        // Dup/del ratio: single dup:del SIZE ratio r (log slider centred at 1.0,
+        // r in [0.001,1000]). Frequency is coupled as dup_bias = 1/(1+r) so the mean
+        // array length stays constant (bigger events => proportionally rarer). The
+        // four derived quantities (dup/del size and rate) are shown beneath.
         float ratio_e = log10f(d->f_size_ratio);
-        slider_row(panel_x, y, sw, "Size ratio", TextFormat("%.2fx", d->f_size_ratio), &ratio_e, -1.0f, 1.0f);
+        const char *rfmt = d->f_size_ratio < 1.0f ? "%.3fx" : d->f_size_ratio < 10.0f ? "%.2fx" : "%.0fx";
+        slider_row(panel_x, y, sw, "Dup/del ratio", TextFormat(rfmt, d->f_size_ratio), &ratio_e, -3.0f, 3.0f);
         d->f_size_ratio = powf(10.0f, ratio_e); y += 28;
-        float dd_sr = sqrtf(d->f_size_ratio);
-        DrawText(TextFormat("dup ~%.1f / del ~%.1f units", d->f_indel_size * dd_sr, d->f_indel_size / dd_sr),
-                 panel_x + 14, (int)y, 10, (Color){90, 120, 90, 255}); y += 18;
+        {
+            float r = d->f_size_ratio, sr = sqrtf(r);
+            float pdup = 1.0f / (1.0f + r);
+            DrawText(TextFormat("dup ~%.1f u @ %.2f/gen", d->f_indel_size * sr, d->f_indel_rate * pdup),
+                     panel_x + 14, (int)y, 10, (Color){90, 120, 90, 255}); y += 13;
+            DrawText(TextFormat("del ~%.1f u @ %.2f/gen", d->f_indel_size / sr, d->f_indel_rate * (1.0f - pdup)),
+                     panel_x + 14, (int)y, 10, (Color){90, 120, 90, 255}); y += 17;
+        }
         slider_row(panel_x, y, sw, "SNP rate", TextFormat("%.2f", d->f_snp_rate), &d->f_snp_rate, 0.0f, 1.0f); y += 32;
         DrawText("Display", panel_x + 12, (int)y, 14, GRAY); y += 22;
         slider_row(panel_x, y, sw, "Display bars", TextFormat("%d", (int)d->f_nbins), &d->f_nbins, 16, 120); y += 26;
