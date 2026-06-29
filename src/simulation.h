@@ -55,8 +55,10 @@ struct SimParams {
 struct SimStats {
     int generation;
     int snp_count;
-    int dup_count;
-    int del_count;
+    int dup_count;        // duplication events applied
+    int del_count;        // deletion events applied
+    long dup_units;       // cumulative repeat units ADDED by duplications
+    long del_units;       // cumulative repeat units REMOVED by deletions
     bool collapsed;
 };
 

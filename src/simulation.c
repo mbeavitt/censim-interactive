@@ -400,6 +400,7 @@ static void apply_indels(Simulation *sim) {
             }
             duplicate_at_position(&sim->array, char_start, char_end);
             sim->stats.dup_count++;
+            sim->stats.dup_units += indel_units;  // measured (post-checks) size
         } else {
             // Check min size
             if (sim->params.bounding_enabled &&
@@ -408,6 +409,7 @@ static void apply_indels(Simulation *sim) {
             }
             delete_at_position(&sim->array, char_start, char_end);
             sim->stats.del_count++;
+            sim->stats.del_units += indel_units;  // measured (post-checks) size
         }
     }
 
@@ -459,6 +461,8 @@ void sim_init(Simulation *sim, int initial_size, unsigned int seed) {
     sim->stats.snp_count = 0;
     sim->stats.dup_count = 0;
     sim->stats.del_count = 0;
+    sim->stats.dup_units = 0;
+    sim->stats.del_units = 0;
     sim->stats.collapsed = false;
 }
 
@@ -499,6 +503,8 @@ void sim_reset(Simulation *sim) {
     sim->stats.snp_count = 0;
     sim->stats.dup_count = 0;
     sim->stats.del_count = 0;
+    sim->stats.dup_units = 0;
+    sim->stats.del_units = 0;
     sim->stats.collapsed = false;
 }
 
