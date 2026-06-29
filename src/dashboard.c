@@ -123,7 +123,7 @@ static const Color GRID  = (Color){0, 90, 40, 255};     // neutral chrome (panel
 static const Color BAR   = (Color){0, 200, 110, 255};   // default accent (panel chrome)
 static const Color REAL  = (Color){255, 70, 70, 255};   // A. thaliana ghost
 static const Color UNIF  = (Color){150, 150, 160, 255}; // uniform-model ghost (unused for now)
-static const Color MED   = (Color){255, 230, 80, 255};  // live median of the plotted data
+static const Color MED   = (Color){255, 255, 255, 255}; // live median of the plotted data
 
 // Per-plot accent palette: a cohesive "cool scientific" run from mint -> cyan ->
 // sky -> aqua -> lime, anchored by a warm amber on the COMPOSITE summary metric.
@@ -324,8 +324,8 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
         float f = val_frac(med, lo_v, hi_v, s->log_scale);
         if (f >= 0 && f <= 1) {
             float xx = px + f * pw;
-            for (int yy = (int)py; yy < (int)(py + ph); yy += 6)
-                DrawLine((int)xx, yy, (int)xx, yy + 3, MED);
+            for (int yy = (int)py; yy < (int)(py + ph); yy += 7)
+                DrawLineEx((Vector2){xx, (float)yy}, (Vector2){xx, (float)yy + 4}, 2.5f, MED);
             char mb[32]; snprintf(mb, sizeof(mb), "med %s", fmt(med));
             DrawText(mb, (int)xx + 2, (int)(py + ph - 11), 9, MED);
         }
