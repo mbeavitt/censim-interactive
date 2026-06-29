@@ -9,7 +9,15 @@
 #include <stdlib.h>
 #include <time.h>
 
-#define DASH_MAXBINS 256
+// Internal histograms are binned FINE (DASH_INTERNAL_BINS) over their generous
+// fixed ranges; the dashboard then re-aggregates the *populated* window down to a
+// consistent number of on-screen bars at draw time (see draw_hist). Keeping the
+// internal resolution high means a narrow data region still has plenty of fine
+// bins to resolve, so the displayed detail no longer collapses to "a couple bars"
+// when a metric only occupies a sliver of its range. DASH_MAXBINS bounds the
+// snapshot/aggregation buffers and must be >= DASH_INTERNAL_BINS.
+#define DASH_INTERNAL_BINS 480
+#define DASH_MAXBINS       512
 
 typedef struct {
     int   nbins, log_scale;
@@ -110,12 +118,33 @@ static void window_bins(const HistSnap *s, int autoscale, int log_y, int *b0, in
     *b0 = lo; *b1 = hi;
 }
 
-static const Color BG    = (Color){15, 20, 15, 255};
-static const Color GRID  = (Color){0, 90, 40, 255};
-static const Color BAR   = (Color){0, 200, 110, 255};
+static const Color BG    = (Color){15, 20, 15, 255};    // near-black, matches single view
+static const Color GRID  = (Color){0, 90, 40, 255};     // neutral chrome (panel/status/legend)
+static const Color BAR   = (Color){0, 200, 110, 255};   // default accent (panel chrome)
 static const Color REAL  = (Color){255, 70, 70, 255};   // A. thaliana ghost
 static const Color UNIF  = (Color){150, 150, 160, 255}; // uniform-model ghost (unused for now)
 static const Color MED   = (Color){255, 230, 80, 255};  // live median of the plotted data
+
+// Per-plot accent palette: a cohesive "cool scientific" run from mint -> cyan ->
+// sky -> aqua -> lime, anchored by a warm amber on the COMPOSITE summary metric.
+// Each plot's chrome (title, border, axis text) and bars derive from its accent,
+// echoing the glowing green/cyan/amber traces of the single-view mission control.
+static const Color ACCENT[6] = {
+    {0,   230, 140, 255},  // unique repeats / kb  - mint green
+    {0,   210, 255, 255},  // HORs / kb            - cyan
+    {70,  170, 255, 255},  // HOR block size       - sky blue
+    {0,   220, 200, 255},  // HOR block gap        - aqua / teal
+    {150, 230, 90,  255},  // HOR similarity       - lime
+    {255, 190, 70,  255},  // composite HOR metric - amber (warm anchor)
+};
+
+// Scale a colour's brightness by f (alpha preserved), clamping each channel.
+static Color shade(Color c, float f) {
+    float r = c.r * f, g = c.g * f, b = c.b * f;
+    if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+    if (r < 0)   r = 0;   if (g < 0)   g = 0;   if (b < 0)   b = 0;
+    return (Color){(unsigned char)r, (unsigned char)g, (unsigned char)b, c.a};
+}
 
 // Left edge value of bin i for a raw Histogram (the reference uses these).
 static float edge_at(const Histogram *h, int i) {
@@ -163,13 +192,16 @@ static void draw_ref_curve(const Histogram *ref, float px, float py, float pw, f
 }
 
 static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
-                      bool log_y, bool autoscale, const Histogram *ref) {
+                      bool log_y, bool autoscale, const Histogram *ref,
+                      int target_bars, Color accent) {
+    Color axc = shade(accent, 0.55f);  // dimmed accent for border + axis text
     DrawRectangleRec(b, BG);
-    DrawRectangleLinesEx(b, 1, GRID);
-    DrawText(title, (int)b.x + 6, (int)b.y + 4, 11, BAR);
+    DrawRectangleLinesEx(b, 1, axc);
+    DrawText(title, (int)b.x + 7, (int)b.y + 5, 11, shade(accent, 0.35f));  // glow
+    DrawText(title, (int)b.x + 6, (int)b.y + 4, 11, accent);
     char nbuf[40];
     snprintf(nbuf, sizeof(nbuf), "n=%ld", s ? s->total : 0);
-    DrawText(nbuf, (int)b.x + 6, (int)b.y + 17, 9, GRID);
+    DrawText(nbuf, (int)b.x + 6, (int)b.y + 17, 9, axc);
 
     // Warn if any data fell outside the binned range (clipped to under/overflow).
     if (s && (s->underflow > 0 || s->overflow > 0)) {
@@ -182,7 +214,7 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     float px = b.x + 40, py = b.y + 30, pw = b.width - 48, ph = b.height - 46;
 
     if (!s || s->maxcount == 0) {
-        DrawText("awaiting data", (int)(px + pw/2 - 40), (int)(py + ph/2), 10, GRID);
+        DrawText("awaiting data", (int)(px + pw/2 - 40), (int)(py + ph/2), 10, axc);
         return;
     }
 
@@ -210,57 +242,78 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
         b0 -= pad; if (b0 < 0) b0 = 0;
         b1 += pad; if (b1 >= s->nbins) b1 = s->nbins - 1;
     }
-    int nb = b1 - b0 + 1;
+    int avail = b1 - b0 + 1;          // fine bins inside the displayed window
     float lo_v = bin_edge(s, b0), hi_v = bin_edge(s, b1 + 1);
 
-    // Per-bin plotted value. On a LOG x-axis, plot DENSITY (count / bin's linear
-    // width) rather than raw counts: log-spaced bins get linearly wider toward the
-    // right, so raw counts pile into a misleading hump, whereas density recovers the
-    // true shape (e.g. block gap: high at small gaps, decaying to rare large ones,
-    // as in the paper). Linear x has equal widths, so density == count up to scale.
+    // Adaptive bin sizer: re-aggregate the window's fine bins into a consistent
+    // number of on-screen bars so every plot shows comparable resolution, no matter
+    // how wide its populated region is. We can only merge fine bins, never split
+    // them, so cap the bar count at what's available (a genuinely sparse metric
+    // simply shows fewer bars rather than a stretched handful).
+    int bars = target_bars; if (bars < 1) bars = 1; if (bars > avail) bars = avail;
+
+    // Per-bar plotted value is a DENSITY (count / linear x-width). On a LOG x-axis
+    // log-spaced bins widen toward the right, so raw counts pile into a misleading
+    // hump; density recovers the true shape (e.g. block gap: high at small gaps,
+    // decaying to rare large ones, as in the paper). Linear x has equal widths, so
+    // density == count up to scale. Computing it per *display* bar keeps the y-axis
+    // labels consistent with the bars actually drawn.
+    static float dens[DASH_MAXBINS];  // single-threaded UI: reused each frame
     float dmax_v = 0.0f, dmin_v = 0.0f;
     int seen = 0;
-    for (int i = b0; i <= b1; i++) {
-        if (s->counts[i] == 0) continue;
-        float w = s->log_scale ? (bin_edge(s, i + 1) - bin_edge(s, i)) : 1.0f;
-        float v = (float)s->counts[i] / w;
-        if (!seen || v > dmax_v) dmax_v = v;
-        if (!seen || v < dmin_v) dmin_v = v;
-        seen = 1;
+    for (int j = 0; j < bars; j++) {
+        int fs = b0 + (int)((long)j       * avail / bars);
+        int fe = b0 + (int)((long)(j + 1) * avail / bars);
+        if (fe <= fs) fe = fs + 1;
+        long c = 0;
+        for (int i = fs; i < fe && i <= b1; i++) c += s->counts[i];
+        float w = s->log_scale ? (bin_edge(s, fe) - bin_edge(s, fs)) : (float)(fe - fs);
+        float v = (w > 0.0f) ? (float)c / w : 0.0f;
+        dens[j] = v;
+        if (v > 0.0f) {
+            if (!seen || v > dmax_v) dmax_v = v;
+            if (!seen || v < dmin_v) dmin_v = v;
+            seen = 1;
+        }
     }
     if (dmax_v <= 0.0f) dmax_v = 1.0f;
     if (dmin_v <= 0.0f) dmin_v = dmax_v;
     float lminv = log10f(dmin_v), lmaxv = log10f(dmax_v);
     if (lmaxv - lminv < 1e-6f) lminv = lmaxv - 1.0f;  // single distinct value
 
-    float bw = pw / nb;
-    for (int i = b0; i <= b1; i++) {
-        if (s->counts[i] == 0) continue;
-        float w = s->log_scale ? (bin_edge(s, i + 1) - bin_edge(s, i)) : 1.0f;
-        float v = (float)s->counts[i] / w;
-        float h01 = log_y ? (log10f(v) - lminv) / (lmaxv - lminv) : v / dmax_v;
+    Color bar_top = shade(accent, 1.25f);  // brighter cap for a touch of dimension
+    for (int j = 0; j < bars; j++) {
+        if (dens[j] <= 0.0f) continue;
+        float h01 = log_y ? (log10f(dens[j]) - lminv) / (lmaxv - lminv) : dens[j] / dmax_v;
         if (h01 < 0.0f) h01 = 0.0f; else if (h01 > 1.0f) h01 = 1.0f;
         float hh = ph * h01;
         if (log_y && hh < 1.0f) hh = 1.0f;  // keep the smallest log bar visible
-        DrawRectangle((int)(px + (i - b0) * bw), (int)(py + ph - hh),
-                      (int)(bw > 1 ? bw - 1 : 1), (int)hh, BAR);
+        // Derive both x-edges from the same formula so adjacent bars share an exact
+        // integer boundary -- this is what keeps the inter-bar gaps perfectly even
+        // (independent int-casts of position and width used to jitter them).
+        int xL = (int)(px + pw * (float)j       / bars);
+        int xR = (int)(px + pw * (float)(j + 1) / bars);
+        int w = xR - xL - 1; if (w < 1) w = 1;  // uniform 1px gap
+        int yT = (int)(py + ph - hh);
+        DrawRectangle(xL, yT, w, (int)hh, accent);
+        DrawRectangle(xL, yT, w, 1, bar_top);
     }
 
     // y-axis: top = max plotted value, bottom = 0 (lin) or min (log); scale tag.
     // For log-x plots the value is a density (count per unit x), else a raw count.
-    DrawText(fmt(dmax_v), (int)b.x + 3, (int)py - 4, 9, GRID);
-    DrawText(log_y ? fmt(dmin_v) : "0", (int)b.x + 3, (int)(py + ph - 8), 9, GRID);
-    DrawText(log_y ? "log" : "lin", (int)b.x + 3, (int)(py + ph/2), 9, GRID);
-    DrawText(s->log_scale ? "dens" : "cnt", (int)b.x + 3, (int)(py + ph/2 + 11), 8, (Color){0,70,30,255});
+    DrawText(fmt(dmax_v), (int)b.x + 3, (int)py - 4, 9, axc);
+    DrawText(log_y ? fmt(dmin_v) : "0", (int)b.x + 3, (int)(py + ph - 8), 9, axc);
+    DrawText(log_y ? "log" : "lin", (int)b.x + 3, (int)(py + ph/2), 9, axc);
+    DrawText(s->log_scale ? "dens" : "cnt", (int)b.x + 3, (int)(py + ph/2 + 11), 8, shade(accent, 0.3f));
 
     // x-axis: 3 ticks across the displayed window (geometric mid for log)
     float xmid = s->log_scale ? sqrtf(lo_v * hi_v) : 0.5f * (lo_v + hi_v);
     int ytick = (int)(py + ph + 2);
-    DrawText(fmt(lo_v), (int)px, ytick, 9, GRID);
-    const char *m = fmt(xmid); DrawText(m, (int)(px + pw/2 - MeasureText(m, 9)/2), ytick, 9, GRID);
-    const char *x = fmt(hi_v); DrawText(x, (int)(px + pw - MeasureText(x, 9)), ytick, 9, GRID);
+    DrawText(fmt(lo_v), (int)px, ytick, 9, axc);
+    const char *m = fmt(xmid); DrawText(m, (int)(px + pw/2 - MeasureText(m, 9)/2), ytick, 9, axc);
+    const char *x = fmt(hi_v); DrawText(x, (int)(px + pw - MeasureText(x, 9)), ytick, 9, axc);
     const char *xs = s->log_scale ? "log x" : "lin x";
-    DrawText(xs, (int)(px + pw - MeasureText(xs, 9)), (int)py - 2, 9, (Color){0,70,30,255});
+    DrawText(xs, (int)(px + pw - MeasureText(xs, 9)), (int)py - 2, 9, shade(accent, 0.3f));
 
     // real-data distribution overlay (red density curve)
     draw_ref_curve(ref, px, py, pw, ph, lo_v, hi_v, s->log_scale, log_y);
@@ -339,7 +392,7 @@ static void launch(Dashboard *d) {
     cfg.target_generations = (long)d->f_target_gens;
     cfg.seed_base          = (unsigned int)time(NULL);
     cfg.base_params        = p;
-    cfg.nbins              = (int)d->f_nbins;
+    cfg.nbins              = DASH_INTERNAL_BINS;  // fine internal bins; display re-aggregates
 
     batch_init(&d->batch, cfg, 0);
     batch_start(&d->batch);
@@ -405,15 +458,18 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         {"COMPOSITE HOR METRIC",            &cp, "composite"},
     };
     Vector2 mouse = GetMousePosition();
+    int target_bars = (int)d->f_nbins;
     for (int i = 0; i < 6; i++) {
+        Color accent = ACCENT[i];
         const Histogram *ref = d->show_ref ? reference_get(&d->ref, plots[i].metric) : NULL;
-        draw_hist(cell[i], plots[i].title, plots[i].s, d->plot_log_y[i], d->autoscale_x, ref);
+        draw_hist(cell[i], plots[i].title, plots[i].s, d->plot_log_y[i], d->autoscale_x,
+                  ref, target_bars, accent);
         // per-plot clickable Y-scale toggle (top-right of the cell)
         Rectangle tg = { cell[i].x + cell[i].width - 52, cell[i].y + 3, 46, 15 };
         bool hov = CheckCollisionPointRec(mouse, tg);
-        DrawRectangleRec(tg, hov ? (Color){0,70,40,255} : (Color){25,35,25,255});
-        DrawRectangleLinesEx(tg, 1, GRID);
-        DrawText(d->plot_log_y[i] ? "Y:log" : "Y:lin", (int)tg.x + 5, (int)tg.y + 3, 9, BAR);
+        DrawRectangleRec(tg, hov ? shade(accent, 0.3f) : (Color){25,35,25,255});
+        DrawRectangleLinesEx(tg, 1, shade(accent, 0.55f));
+        DrawText(d->plot_log_y[i] ? "Y:log" : "Y:lin", (int)tg.x + 5, (int)tg.y + 3, 9, accent);
         if (hov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) d->plot_log_y[i] = !d->plot_log_y[i];
     }
 
@@ -485,8 +541,8 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         slider_row(panel_x, y, sw, "INDEL size", TextFormat("%.1f", d->f_indel_size), &d->f_indel_size, 1.0f, 100.0f); y += 30;
         slider_row(panel_x, y, sw, "SNP rate", TextFormat("%.2f", d->f_snp_rate), &d->f_snp_rate, 0.0f, 1.0f); y += 32;
         DrawText("Display", panel_x + 12, (int)y, 14, GRAY); y += 22;
-        slider_row(panel_x, y, sw, "Bin resolution", TextFormat("%d", (int)d->f_nbins), &d->f_nbins, 20, 200); y += 26;
-        DrawText("(applies on next Run)", panel_x + 14, (int)y, 10, (Color){120,100,60,255}); y += 18;
+        slider_row(panel_x, y, sw, "Display bars", TextFormat("%d", (int)d->f_nbins), &d->f_nbins, 16, 120); y += 26;
+        DrawText("(adaptive; updates live)", panel_x + 14, (int)y, 10, (Color){90,120,90,255}); y += 18;
         GuiCheckBox((Rectangle){panel_x + 12, y, 20, 20}, "Autoscale X (fit data)", &d->autoscale_x); y += 26;
         GuiCheckBox((Rectangle){panel_x + 12, y, 20, 20}, "Show real data", &d->show_ref); y += 26;
         DrawText("Click \"Y:log/lin\" on a plot to toggle", panel_x + 14, (int)y, 10, GRAY); y += 22;

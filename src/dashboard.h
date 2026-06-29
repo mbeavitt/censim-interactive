@@ -21,7 +21,7 @@ typedef struct {
     bool  elastic;         // false = free drift (default); true = elastic bounds toward start size
     float f_elasticity;    // elastic pull strength (when elastic enabled)
 
-    float f_nbins;         // histogram bin resolution (applied on next Run)
+    float f_nbins;         // target on-screen bars per plot (adaptive; applied live)
     bool  plot_log_y[6];   // per-plot log-scale Y toggle
     bool  autoscale_x;     // fit each plot's x-window to the data (~99%)
     bool  show_advanced;   // advanced controls collapsible state
