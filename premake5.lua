@@ -1,5 +1,5 @@
 -- Centromere Evolution Simulator
--- Build with: premake5 gmake2 && make config=release
+-- Build with: premake5 gmake && make config=release
 
 workspace "CenSim"
     configurations { "Debug", "Release" }
