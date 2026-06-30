@@ -126,21 +126,34 @@ static const Color UNIF  = (Color){150, 150, 160, 255}; // uniform-model ghost (
 static const Color MED   = (Color){255, 255, 255, 255}; // live median of the plotted data
 static const Color FIT   = (Color){255, 235, 90, 255};  // power-law-with-cutoff fit (block size)
 
-// Solve the 3x3 system A x = rhs by Cramer's rule. Returns 0 if (near-)singular.
-// Used for the weighted least-squares plane fit behind the block-size overlay.
-static int solve3(const double A[3][3], const double rhs[3], double out[3]) {
-    double det = A[0][0]*(A[1][1]*A[2][2]-A[1][2]*A[2][1])
-               - A[0][1]*(A[1][0]*A[2][2]-A[1][2]*A[2][0])
-               + A[0][2]*(A[1][0]*A[2][1]-A[1][1]*A[2][0]);
-    if (fabs(det) < 1e-30) return 0;
-    for (int k = 0; k < 3; k++) {
-        double M[3][3];
-        for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) M[i][j] = A[i][j];
-        for (int i = 0; i < 3; i++) M[i][k] = rhs[i];
-        double d = M[0][0]*(M[1][1]*M[2][2]-M[1][2]*M[2][1])
-                 - M[0][1]*(M[1][0]*M[2][2]-M[1][2]*M[2][0])
-                 + M[0][2]*(M[1][0]*M[2][1]-M[1][1]*M[2][0]);
-        out[k] = d / det;
+// Solve the 7x7 system A x = rhs by Gaussian elimination with partial pivoting.
+// Used for the weighted least-squares 6th order Chebyshev fit.
+static int solve7(const double A[7][7], const double rhs[7], double out[7]) {
+    double M[7][7], b[7];
+    for(int i=0; i<7; i++) {
+        for(int j=0; j<7; j++) M[i][j] = A[i][j];
+        b[i] = rhs[i];
+    }
+    for(int i=0; i<7; i++) {
+        int piv = i;
+        for(int j=i+1; j<7; j++) {
+            if (fabs(M[j][i]) > fabs(M[piv][i])) piv = j;
+        }
+        if (fabs(M[piv][i]) < 1e-12) return 0;
+        if (piv != i) {
+            for(int j=i; j<7; j++) { double t = M[i][j]; M[i][j] = M[piv][j]; M[piv][j] = t; }
+            double t = b[i]; b[i] = b[piv]; b[piv] = t;
+        }
+        for(int j=i+1; j<7; j++) {
+            double f = M[j][i] / M[i][i];
+            for(int k=i; k<7; k++) M[j][k] -= f * M[i][k];
+            b[j] -= f * b[i];
+        }
+    }
+    for(int i=6; i>=0; i--) {
+        out[i] = b[i];
+        for(int j=i+1; j<7; j++) out[i] -= M[i][j] * out[j];
+        out[i] /= M[i][i];
     }
     return 1;
 }
@@ -281,9 +294,10 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     static float dens[DASH_MAXBINS];  // single-threaded UI: reused each frame
     float dmax_v = 0.0f, dmin_v = 0.0f;
     int seen = 0;
-    // Power-law-with-cutoff fit accumulators (weighted least squares of ln density
-    // against the regressors ln(x) and x). See the solve + overlay below.
-    double Sw=0, Su=0, Sv=0, Suu=0, Svv=0, Suv=0, Sy=0, Suy=0, Svy=0; int nfit=0;
+    // 6th order Chebyshev fit accumulators (weighted least squares of ln density)
+    double M_cheb[7][7] = {0}, rhs_cheb[7] = {0}; int nfit=0;
+    double u_min = (lo_v > 0.0f) ? log(lo_v) : -10.0;
+    double u_max = (hi_v > 0.0f) ? log(hi_v) : 10.0;
     for (int j = 0; j < bars; j++) {
         int fs = b0 + (int)((long)j       * avail / bars);
         int fe = b0 + (int)((long)(j + 1) * avail / bars);
@@ -306,10 +320,18 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
             double xc = s->log_scale ? sqrt((double)bin_edge(s, fs) * bin_edge(s, fe))
                                      : 0.5 * (bin_edge(s, fs) + bin_edge(s, fe));
             if (xc > 0.0) {
-                double u = log(xc), vv = xc, y = log((double)v);
-                Sw  += 1.0;       Su  += u;          Sv  += vv;
-                Suu += u*u;       Svv += vv*vv;      Suv += u*vv;
-                Sy  += y;         Suy += u*y;        Svy += vv*y;
+                double u = log(xc), y = log((double)v);
+                double z = (u_max > u_min) ? 2.0 * (u - u_min) / (u_max - u_min) - 1.0 : 0.0;
+                double T[7];
+                T[0] = 1.0;
+                T[1] = z;
+                for (int k = 2; k < 7; k++) T[k] = 2.0 * z * T[k-1] - T[k-2];
+                for (int row = 0; row < 7; row++) {
+                    for (int col = 0; col < 7; col++) {
+                        M_cheb[row][col] += T[row] * T[col];
+                    }
+                    rhs_cheb[row] += T[row] * y;
+                }
                 nfit++;
             }
         }
@@ -356,38 +378,28 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     // real-data distribution overlay (red density curve)
     draw_ref_curve(ref, px, py, pw, ph, lo_v, hi_v, s->log_scale, log_y);
 
-    // Power-law-with-cutoff overlay (block size). Fit f(x) = C * x^-alpha * e^-lambda x
-    // by ordinary (count-weighted) least squares in log space: ln f = b0 - alpha*ln x
-    // - lambda*x is LINEAR in the regressors ln(x) and x, so a single closed-form 3x3
-    // solve recovers all three coefficients -- no iteration, cheap per frame. NB this
-    // fits the eyeballed log-log line, not a rigorous (MLE) tail estimator. lambda is
-    // the cutoff strength: lambda->0 means a pure power law (a straight log-log line),
-    // larger lambda means the tail decays exponentially fast.
-    if (fit_cutoff && nfit >= 3) {
-        double A[3][3] = {{Sw, Su, Sv}, {Su, Suu, Suv}, {Sv, Suv, Svv}};
-        double rhs[3]  = {Sy, Suy, Svy}, cf[3];
-        if (solve3(A, rhs, cf)) {
-            double b0 = cf[0], beta1 = cf[1], beta2 = cf[2];  // alpha=-beta1, lambda=-beta2
-            // The cutoff model is only a valid (decaying) size distribution for
-            // lambda >= 0. If the unconstrained fit wants lambda < 0 (data is a pure
-            // power law, or heavier-tailed), pin lambda = 0 and refit the straight
-            // log-log line -- otherwise e^-lambda*x grows and the overlay curls back
-            // up into a non-physical U. lambda pinned at 0 reads as "pure power law".
-            if (-beta2 < 0.0) {
-                double denom = Sw*Suu - Su*Su;
-                if (fabs(denom) > 1e-30) {
-                    beta1 = (Sw*Suy - Su*Sy) / denom;
-                    b0    = (Sy - beta1*Su) / Sw;
-                    beta2 = 0.0;
-                }
-            }
+    // 6th order Chebyshev polynomial overlay (block size). Fit f(x) as a 6th degree
+    // polynomial of z(ln(x)), where z maps the ln(x) window to [-1, 1].
+    // Solved by ordinary (count-weighted) least squares in log space.
+    if (fit_cutoff && nfit >= 7) {
+        double cf[7];
+        if (solve7(M_cheb, rhs_cheb, cf)) {
             int hv = 0; float xprev = 0, yprev = 0;
             for (int k = 0; k <= 64; k++) {
                 float f = (float)k / 64.0f;
                 float xv = s->log_scale
                          ? powf(10.0f, log10f(lo_v) + (log10f(hi_v) - log10f(lo_v)) * f)
                          : lo_v + (hi_v - lo_v) * f;
-                double d = exp(b0 + beta1 * log((double)xv) + beta2 * (double)xv);
+                if (xv <= 0.0) continue;
+                double u = log(xv);
+                double z = (u_max > u_min) ? 2.0 * (u - u_min) / (u_max - u_min) - 1.0 : 0.0;
+                double T[7];
+                T[0] = 1.0;
+                T[1] = z;
+                for (int i = 2; i < 7; i++) T[i] = 2.0 * z * T[i-1] - T[i-2];
+                double log_d = 0;
+                for (int i = 0; i < 7; i++) log_d += cf[i] * T[i];
+                double d = exp(log_d);
                 if (!(d > 0.0)) { hv = 0; continue; }
                 float h01 = log_y ? (log10f((float)d) - lminv) / (lmaxv - lminv)
                                   : (float)d / dmax_v;
@@ -396,7 +408,7 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                 if (hv) DrawLineEx((Vector2){xprev, yprev}, (Vector2){X, Y}, 2.0f, FIT);
                 xprev = X; yprev = Y; hv = 1;
             }
-            char fb[40]; snprintf(fb, sizeof(fb), "fit lambda=%.4g", -beta2);
+            char fb[40]; snprintf(fb, sizeof(fb), "Chebyshev 6th order fit");
             DrawText(fb, (int)px + 3, (int)py + 4, 10, FIT);
         }
     }
