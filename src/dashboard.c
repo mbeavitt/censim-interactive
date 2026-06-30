@@ -227,7 +227,9 @@ static void draw_ref_curve(const Histogram *ref, float px, float py, float pw, f
 
 static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                       bool log_y, bool autoscale, const Histogram *ref,
-                      int target_bars, Color accent, int fit_type) {
+                      int target_bars, Color accent, int fit_type, int poly_order,
+                      double *out_cf, int *out_ncoeffs) {
+    if (out_ncoeffs) *out_ncoeffs = 0;
     Color axc = shade(accent, 0.55f);  // dimmed accent for border + axis text
     DrawRectangleRec(b, BG);
     DrawRectangleLinesEx(b, 1, axc);
@@ -296,9 +298,10 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     float dmax_v = 0.0f, dmin_v = 0.0f;
     int seen = 0;
     // Polynomial fit accumulators (weighted least squares of ln density)
-    int poly_order = (fit_type == 1) ? 6 : (fit_type == 3 ? 1 : 0);
-    int n_coeffs = poly_order + 1;
-    double M_cheb[49] = {0}, rhs_cheb[7] = {0}; int nfit=0;
+    int poly_order_actual = (fit_type == 1) ? poly_order : (fit_type == 3 ? 1 : 0);
+    int n_coeffs = poly_order_actual + 1;
+    if (n_coeffs > 10) n_coeffs = 10;
+    double M_cheb[100] = {0}, rhs_cheb[10] = {0}; int nfit=0;
     double u_min = (lo_v > 0.0f) ? log(lo_v) : -10.0;
     double u_max = (hi_v > 0.0f) ? log(hi_v) : 10.0;
 
@@ -344,7 +347,7 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
             if (xc > 0.0) {
                 double u = log(xc), y = log((double)v);
                 double z = (u_max > u_min) ? 2.0 * (u - u_min) / (u_max - u_min) - 1.0 : 0.0;
-                double T[7];
+                double T[10];
                 T[0] = 1.0;
                 T[1] = z;
                 for (int k = 2; k < n_coeffs; k++) T[k] = 2.0 * z * T[k-1] - T[k-2];
@@ -402,8 +405,12 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
 
     // Polynomial overlays (Chebyshev or Power law)
     if ((fit_type == 1 || fit_type == 3) && nfit >= n_coeffs) {
-        double cf[7];
+        double cf[10];
         if (solve_sys(M_cheb, rhs_cheb, cf, n_coeffs)) {
+            if (out_cf && out_ncoeffs) {
+                *out_ncoeffs = n_coeffs;
+                for (int i = 0; i < n_coeffs; i++) out_cf[i] = cf[i];
+            }
             int hv = 0; float xprev = 0, yprev = 0;
             for (int k = 0; k <= 64; k++) {
                 float f = (float)k / 64.0f;
@@ -413,7 +420,7 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                 if (xv <= 0.0) continue;
                 double u = log(xv);
                 double z = (u_max > u_min) ? 2.0 * (u - u_min) / (u_max - u_min) - 1.0 : 0.0;
-                double T[7];
+                double T[10];
                 T[0] = 1.0;
                 T[1] = z;
                 for (int i = 2; i < n_coeffs; i++) T[i] = 2.0 * z * T[i-1] - T[i-2];
@@ -428,7 +435,7 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                 if (hv) DrawLineEx((Vector2){xprev, yprev}, (Vector2){X, Y}, 2.0f, FIT);
                 xprev = X; yprev = Y; hv = 1;
             }
-            char fb[40]; snprintf(fb, sizeof(fb), (fit_type == 1) ? "Chebyshev 6th order fit" : "Power law fit");
+            char fb[40]; snprintf(fb, sizeof(fb), (fit_type == 1) ? "Chebyshev %d order fit" : "Power law fit", poly_order_actual);
             DrawText(fb, (int)px + 3, (int)py + 4, 10, FIT);
         }
     } else if (fit_type == 2 && stddev > 0.0 && total_for_normal > 0) {
@@ -668,7 +675,8 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         else if (i == 2 || i == 3 || i == 5) fit_type = 1; // Chebyshev 6th
         else if (i == 4) fit_type = 3; // Power law
         draw_hist(cell[i], plots[i].title, plots[i].s, d->plot_log_y[i], d->autoscale_x,
-                  ref, target_bars, accent, fit_type);
+                  ref, target_bars, accent, fit_type, (int)d->f_cheb_order,
+                  d->fit_cf[i], &d->fit_ncoeffs[i]);
         // per-plot clickable Y-scale toggle (top-right of the cell)
         Rectangle tg = { cell[i].x + cell[i].width - 52, cell[i].y + 3, 46, 15 };
         bool hov = CheckCollisionPointRec(mouse, tg);
@@ -782,6 +790,7 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         DrawText("Display", panel_x + 12, (int)y, 14, GRAY); y += 22;
         slider_row(panel_x, y, sw, "Display bars", TextFormat("%d", (int)d->f_nbins), &d->f_nbins, 16, 120); y += 26;
         DrawText("(adaptive; updates live)", panel_x + 14, (int)y, 10, (Color){90,120,90,255}); y += 18;
+        slider_row(panel_x, y, sw, "Chebyshev order", TextFormat("%d", (int)d->f_cheb_order), &d->f_cheb_order, 1.0f, 9.0f); y += 26;
         GuiCheckBox((Rectangle){panel_x + 12, y, 20, 20}, "Autoscale X (fit data)", &d->autoscale_x); y += 26;
         GuiCheckBox((Rectangle){panel_x + 12, y, 20, 20}, "Show real data", &d->show_ref); y += 26;
         DrawText("Click \"Y:log/lin\" on a plot to toggle", panel_x + 14, (int)y, 10, GRAY); y += 22;
@@ -797,4 +806,20 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         DrawText("real data (no reference.dat)", panel_x + 30, (int)y, 11, (Color){150,120,60,255});
     y += 16;
     DrawRectangle(panel_x + 12, (int)y + 2, 12, 8, MED);  DrawText("live median of data", panel_x + 30, (int)y, 11, LIGHTGRAY); y += 16;
+
+    y += 10;
+    DrawText("Fit Coefficients", panel_x + 12, (int)y, 14, GRAY); y += 22;
+    for (int i = 0; i < 6; i++) {
+        if (d->fit_ncoeffs[i] > 0) {
+            DrawText(plots[i].title, panel_x + 14, (int)y, 11, LIGHTGRAY); y += 14;
+            char cfbuf[256] = {0};
+            int pos = 0;
+            for (int k = 0; k < d->fit_ncoeffs[i]; k++) {
+                int n = snprintf(cfbuf + pos, sizeof(cfbuf) - pos, "c%d=%.2g ", k, d->fit_cf[i][k]);
+                if (n > 0) pos += n;
+                if (pos >= sizeof(cfbuf) - 1) break;
+            }
+            DrawText(cfbuf, panel_x + 14, (int)y, 10, (Color){90, 120, 90, 255}); y += 16;
+        }
+    }
 }

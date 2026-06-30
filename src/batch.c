@@ -53,7 +53,7 @@ void batch_init(Batch *b, BatchConfig cfg, int num_workers) {
     // similarity have true upper bounds (~5.6 and 1) so stay linear/tight.
     int nb = (cfg.nbins > 0) ? cfg.nbins : 50;
     hist_init(&b->h_unique_per_kb, 0.0f, 6.0f, nb, 0);      // linear; hard max ~5.6 (all-unique)
-    hist_init(&b->h_hors_per_kb,   1.0f, 1.0e6f, nb, 1);    // log X
+    hist_init(&b->h_hors_per_kb,   0.0f, 2000.0f, nb, 0);   // linear
     hist_init(&b->h_block_size,    1.0f, 1.0e6f, nb, 1);    // log X (block <= array size)
     hist_init(&b->h_block_gap,     1.0f, 1.0e7f, nb, 1);    // log X
     hist_init(&b->h_similarity,    0.0f, 1.0f, nb, 0);      // linear; bounded 0..1

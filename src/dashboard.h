@@ -23,6 +23,9 @@ typedef struct {
     float f_elasticity;    // elastic pull strength (when elastic enabled)
 
     float f_nbins;         // target on-screen bars per plot (adaptive; applied live)
+    float f_cheb_order;    // target polynomial order for Chebyshev fit
+    double fit_cf[6][10];  // stores coefficients for each of the 6 plots
+    int fit_ncoeffs[6];    // number of coefficients stored
     bool  plot_log_y[6];   // per-plot log-scale Y toggle
     bool  autoscale_x;     // fit each plot's x-window to the data (~99%)
     bool  show_advanced;   // advanced controls collapsible state
