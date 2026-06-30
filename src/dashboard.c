@@ -407,6 +407,26 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     if ((fit_type == 1 || fit_type == 3) && nfit >= n_coeffs) {
         double cf[10];
         if (solve_sys(M_cheb, rhs_cheb, cf, n_coeffs)) {
+            double sse = 0.0;
+            for (int j = 0; j < bars; j++) {
+                if (dens[j] <= 0.0f) continue;
+                int fs = b0 + (int)((long)j       * avail / bars);
+                int fe = b0 + (int)((long)(j + 1) * avail / bars);
+                if (fe <= fs) fe = fs + 1;
+                double xc = s->log_scale ? sqrt((double)bin_edge(s, fs) * bin_edge(s, fe))
+                                         : 0.5 * (bin_edge(s, fs) + bin_edge(s, fe));
+                if (xc > 0.0) {
+                    double u = log(xc);
+                    double z = (u_max > u_min) ? 2.0 * (u - u_min) / (u_max - u_min) - 1.0 : 0.0;
+                    double T[10]; T[0] = 1.0; T[1] = z;
+                    for (int k = 2; k < n_coeffs; k++) T[k] = 2.0 * z * T[k-1] - T[k-2];
+                    double log_d = 0;
+                    for (int i = 0; i < n_coeffs; i++) log_d += cf[i] * T[i];
+                    double d_pred = exp(log_d);
+                    double diff = dens[j] - d_pred;
+                    sse += diff * diff;
+                }
+            }
             if (out_fit_text) {
                 int pos = 0;
                 for (int i = 0; i < n_coeffs; i++) {
@@ -414,6 +434,7 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                     if (n > 0) pos += n;
                     if (pos >= 127) break;
                 }
+                snprintf(out_fit_text + pos, 128 - pos, "sse=%.2g", sse);
             }
             int hv = 0; float xprev = 0, yprev = 0;
             for (int k = 0; k <= 64; k++) {
@@ -475,9 +496,33 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
         if (fit_type == 2) snprintf(fb, sizeof(fb), "Normal fit (mu=%.2g, std=%.2g)", mu, stddev);
         else snprintf(fb, sizeof(fb), "Gamma fit (k=%.2g, th=%.2g)", k_shape, theta);
         DrawText(fb, (int)px + 3, (int)py + 4, 10, FIT);
+        
+        double sse = 0.0;
+        for (int j = 0; j < bars; j++) {
+            if (dens[j] <= 0.0f) continue;
+            int fs = b0 + (int)((long)j       * avail / bars);
+            int fe = b0 + (int)((long)(j + 1) * avail / bars);
+            if (fe <= fs) fe = fs + 1;
+            double xc = s->log_scale ? sqrt((double)bin_edge(s, fs) * bin_edge(s, fe))
+                                     : 0.5 * (bin_edge(s, fs) + bin_edge(s, fe));
+            double pdf_x = 0;
+            if (fit_type == 2) {
+                double z_norm = (xc - mu) / stddev;
+                pdf_x = (1.0 / (stddev * sqrt(2.0 * 3.14159265358979323846))) * exp(-0.5 * z_norm * z_norm);
+            } else if (fit_type == 4) {
+                if (xc > 0.0) {
+                    double log_pdf = (k_shape - 1.0) * log(xc) - (xc / theta) - k_shape * log(theta) - lgamma(k_shape);
+                    pdf_x = exp(log_pdf);
+                }
+            }
+            double d_pred = total_for_normal * pdf_x * (s->log_scale ? 1.0 : fine_bin_w);
+            double diff = dens[j] - d_pred;
+            sse += diff * diff;
+        }
+        
         if (out_fit_text) {
-            if (fit_type == 2) snprintf(out_fit_text, 128, "mu=%.2g, std=%.2g", mu, stddev);
-            else snprintf(out_fit_text, 128, "k=%.2g, theta=%.2g", k_shape, theta);
+            if (fit_type == 2) snprintf(out_fit_text, 128, "mu=%.2g, std=%.2g, sse=%.2g", mu, stddev, sse);
+            else snprintf(out_fit_text, 128, "k=%.2g, theta=%.2g, sse=%.2g", k_shape, theta, sse);
         }
     }
 
@@ -510,6 +555,8 @@ void dashboard_init(Dashboard *d) {
     d->f_elasticity  = 0.15f;
     d->f_nbins = 60.0f;
     d->f_cheb_order = 6.0f;
+    d->f_sweep_steps = 10.0f;
+    d->f_sweep_max_min = 5.0f;
     for (int i = 0; i < 6; i++) {
         d->plot_log_y[i] = false;
         d->fit_text[i][0] = '\0';
@@ -574,16 +621,21 @@ static void launch(Dashboard *d) {
 // them. Edges are reported as the bin really was binned -- log-spaced for log-scale
 // metrics -- so bin_lo/bin_center/bin_hi reconstruct the axis exactly. Returns the
 // written path in `out` (caller-sized), or leaves out[0]=0 on failure.
-static void export_histograms(Dashboard *d, char *out, size_t out_sz) {
+static void export_histograms(Dashboard *d, const char *forced_path, char *out, size_t out_sz) {
     out[0] = 0;
     if (!d->has_batch) return;
 
-    char path[256];
     time_t now = time(NULL);
     struct tm tm; localtime_r(&now, &tm);
     char stamp[32];
     strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tm);
-    snprintf(path, sizeof(path), "censim_hist_%s.csv", stamp);
+
+    char path[256];
+    if (forced_path) {
+        snprintf(path, sizeof(path), "%s", forced_path);
+    } else {
+        snprintf(path, sizeof(path), "censim_hist_%s.csv", stamp);
+    }
 
     FILE *f = fopen(path, "w");
     if (!f) return;
@@ -633,6 +685,116 @@ static void slider_row(float panel_x, float y, float w, const char *label,
                        const char *valtext, float *v, float lo, float hi) {
     DrawText(label, (int)panel_x + 12, (int)y + 2, 14, LIGHTGRAY);
     GuiSlider((Rectangle){panel_x + 130, y, w, 18}, NULL, valtext, v, lo, hi);
+}
+
+static void slider_sweep_row(float panel_x, float y, float w, const char *label,
+                             const char *valtext, float *v, float lo, float hi, bool *sweep) {
+    if (sweep) {
+        GuiCheckBox((Rectangle){panel_x + 6, y + 2, 14, 14}, "", sweep);
+        DrawText(label, (int)panel_x + 26, (int)y + 2, 14, LIGHTGRAY);
+    } else {
+        DrawText(label, (int)panel_x + 12, (int)y + 2, 14, LIGHTGRAY);
+    }
+    GuiSlider((Rectangle){panel_x + 130, y, w, 18}, NULL, valtext, v, lo, hi);
+}
+
+#include <sys/stat.h>
+
+static void sweep_set_params(Dashboard *d) {
+    int steps = (int)d->f_sweep_steps;
+    if (steps < 1) steps = 1;
+    if (d->sweep_enabled[0]) d->f_indel_rate = 0.0f + 3.0f * d->sweep_indices[0] / steps;
+    if (d->sweep_enabled[1]) d->f_snp_rate = 0.0f + 1.0f * d->sweep_indices[1] / steps;
+    if (d->sweep_enabled[2]) d->f_indel_size = 1.0f + 99.0f * d->sweep_indices[2] / steps;
+    if (d->sweep_enabled[3]) {
+        float r = -3.0f + 6.0f * d->sweep_indices[3] / steps;
+        d->f_size_ratio = powf(10.0f, r);
+    }
+    if (d->sweep_enabled[4]) d->f_collapse = 0.0f + 5000.0f * d->sweep_indices[4] / steps;
+    if (d->sweep_enabled[5]) d->f_elasticity = 0.0f + 1.0f * d->sweep_indices[5] / steps;
+}
+
+static void sweep_start(Dashboard *d) {
+    int steps = (int)d->f_sweep_steps;
+    if (steps < 1) steps = 1;
+    d->sweep_total_runs = 1;
+    for (int i = 0; i < 6; i++) {
+        d->sweep_indices[i] = 0;
+        d->sweep_counts[i] = d->sweep_enabled[i] ? (steps + 1) : 1;
+        d->sweep_total_runs *= d->sweep_counts[i];
+    }
+    d->sweep_current_run = 1;
+    d->sweep_running = true;
+    
+    time_t t = time(NULL);
+    struct tm *tm = localtime(&t);
+    snprintf(d->sweep_dir, sizeof(d->sweep_dir), "sweep_%04d%02d%02d_%02d%02d%02d",
+             tm->tm_year+1900, tm->tm_mon+1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec);
+    mkdir(d->sweep_dir, 0755);
+    
+    char path[512];
+    snprintf(path, sizeof(path), "%s/histograms", d->sweep_dir);
+    mkdir(path, 0755);
+    
+    snprintf(path, sizeof(path), "%s/summary.csv", d->sweep_dir);
+    d->sweep_summary_file = fopen(path, "w");
+    if (d->sweep_summary_file) {
+        FILE *f = (FILE*)d->sweep_summary_file;
+        fprintf(f, "run,indel_rate,snp_rate,indel_size,size_ratio,collapse,elasticity");
+        fprintf(f, ",med_uniq,med_hors,med_size,med_gap,med_sim,med_comp");
+        fprintf(f, ",fit_uniq,fit_hors,fit_size,fit_gap,fit_sim,fit_comp\n");
+        fflush(f);
+    }
+    
+    sweep_set_params(d);
+    d->sweep_batch_start_time = GetTime();
+    launch(d);
+}
+
+static void sweep_log_and_advance(Dashboard *d, const HistSnap *su, const HistSnap *sh, const HistSnap *bs, const HistSnap *bg, const HistSnap *si, const HistSnap *cp) {
+    if (d->sweep_summary_file) {
+        FILE *f = (FILE*)d->sweep_summary_file;
+        fprintf(f, "%d,%.3f,%.3f,%.3f,%.3f,%.0f,%.3f",
+                d->sweep_current_run, d->f_indel_rate, d->f_snp_rate, d->f_indel_size,
+                d->f_size_ratio, d->f_collapse, d->f_elasticity);
+        fprintf(f, ",%.2g,%.2g,%.2g,%.2g,%.2g,%.2g",
+                snap_median(su), snap_median(sh), snap_median(bs), snap_median(bg), snap_median(si), snap_median(cp));
+        for (int i=0; i<6; i++) {
+            fprintf(f, ",\"%s\"", d->fit_text[i]);
+        }
+        fprintf(f, "\n");
+        fflush(f);
+    }
+    
+    char hpath[512], out[256];
+    snprintf(hpath, sizeof(hpath), "%s/histograms/run_%04d.csv", d->sweep_dir, d->sweep_current_run);
+    export_histograms(d, hpath, out, sizeof(out));
+
+    d->sweep_current_run++;
+    bool carry = true;
+    for (int i = 0; i < 6; i++) {
+        if (carry) {
+            d->sweep_indices[i]++;
+            if (d->sweep_indices[i] >= d->sweep_counts[i]) {
+                d->sweep_indices[i] = 0;
+                carry = true;
+            } else {
+                carry = false;
+            }
+        }
+    }
+    
+    if (carry) {
+        d->sweep_running = false;
+        if (d->sweep_summary_file) {
+            fclose((FILE*)d->sweep_summary_file);
+            d->sweep_summary_file = NULL;
+        }
+    } else {
+        sweep_set_params(d);
+        d->sweep_batch_start_time = GetTime();
+        launch(d);
+    }
 }
 
 void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w) {
@@ -711,8 +873,27 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
 
     // ----- status bar -----
     DrawRectangle(0, top - 2, plot_area_w + 4, 2, GRID);
+    
+    if (d->sweep_running) {
+        char params[256] = {0};
+        int pos = snprintf(params, sizeof(params), "Testing:");
+        if (d->sweep_enabled[0]) pos += snprintf(params+pos, sizeof(params)-pos, " INDEL rate=%.2f", d->f_indel_rate);
+        if (d->sweep_enabled[1]) pos += snprintf(params+pos, sizeof(params)-pos, " SNP rate=%.2f", d->f_snp_rate);
+        if (d->sweep_enabled[2]) pos += snprintf(params+pos, sizeof(params)-pos, " INDEL size=%.1f", d->f_indel_size);
+        if (d->sweep_enabled[3]) pos += snprintf(params+pos, sizeof(params)-pos, " Dup/del ratio=%.2fx", d->f_size_ratio);
+        if (d->sweep_enabled[4]) pos += snprintf(params+pos, sizeof(params)-pos, " Collapse=%.0f", d->f_collapse);
+        if (d->sweep_enabled[5]) pos += snprintf(params+pos, sizeof(params)-pos, " Elasticity=%.2f", d->f_elasticity);
+        DrawText(params, 8, 8, 14, (Color){150, 200, 255, 255});
+    }
+
     char status[256];
-    if (d->has_batch) {
+    if (d->sweep_running) {
+        float elapsed = GetTime() - d->sweep_batch_start_time;
+        float rate = total ? 100.0f * collapsed / total : 0.0f;
+        snprintf(status, sizeof(status),
+                 "SWEEP [%d/%d]  |  %d/%d done   survived %d   collapsed %d (%.0f%%)   |  %d workers  |  run time: %.0fs",
+                 d->sweep_current_run, d->sweep_total_runs, completed, total, survived, collapsed, rate, workers, elapsed);
+    } else if (d->has_batch) {
         float rate = total ? 100.0f * collapsed / total : 0.0f;
         const char *state = stopping ? "STOPPING..." : running ? "RUNNING"
                           : complete ? "COMPLETE" : "STOPPED";
@@ -746,22 +927,34 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     slider_row(panel_x, y, sw, "Generations", TextFormat("%.1fM", d->f_target_gens/1e6f), &d->f_target_gens, 100000, 6000000); y += 32;
     GuiCheckBox((Rectangle){panel_x + 12, y, 20, 20}, "Elastic bounds", &d->elastic); y += 30;
     if (d->elastic) {
-        slider_row(panel_x, y, sw, "Bound strength", TextFormat("%.2f", d->f_elasticity),
-                   &d->f_elasticity, 0.0f, 1.0f); y += 30;
+        slider_sweep_row(panel_x, y, sw, "Bound strength", TextFormat("%.2f", d->f_elasticity),
+                   &d->f_elasticity, 0.0f, 1.0f, &d->sweep_enabled[5]); y += 30;
     }
     y += 4;
 
     bool busy = d->has_batch && (running || stopping);
-    if (stopping) {
+    bool sweep_selected = d->sweep_enabled[0] || d->sweep_enabled[1] || d->sweep_enabled[2] || d->sweep_enabled[3] || d->sweep_enabled[4] || d->sweep_enabled[5];
+
+    if (d->sweep_running) {
+        float sweep_frac = (float)d->sweep_current_run / d->sweep_total_runs;
+        DrawRectangle(panel_x + 12, y, (int)((panel_w - 24) * sweep_frac), 36, (Color){100, 150, 100, 255});
+        if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 36}, TextFormat("#133# Stop Sweep (%d/%d)", d->sweep_current_run, d->sweep_total_runs))) {
+            d->sweep_running = false;
+            batch_request_stop(&d->batch);
+        }
+    } else if (stopping) {
         GuiDisable();
         GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 36}, "#133# Stopping...");
         GuiEnable();
     } else if (busy) {
         if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 36}, "#133# Stop"))
-            batch_request_stop(&d->batch);  // non-blocking; UI stays responsive
+            batch_request_stop(&d->batch);
     } else {
-        if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 36}, "#131# Run batch"))
-            launch(d);
+        if (sweep_selected) {
+            if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 36}, "#131# Start Sweep")) sweep_start(d);
+        } else {
+            if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 36}, "#131# Run batch")) launch(d);
+        }
     }
     y += 46;
 
@@ -772,7 +965,7 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     if (!d->has_batch) GuiDisable();
     if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 28}, "#02# Export data (CSV)")) {
         char path[256];
-        export_histograms(d, path, sizeof(path));
+        export_histograms(d, NULL, path, sizeof(path));
         if (path[0]) snprintf(export_msg, sizeof(export_msg), "Saved %s", path);
         else         snprintf(export_msg, sizeof(export_msg), "Export failed");
         export_at = GetTime();
@@ -789,17 +982,17 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         d->show_advanced = !d->show_advanced;
     y += 30;
     if (d->show_advanced) {
-        slider_row(panel_x, y, sw, "Collapse <", TextFormat("%d", (int)d->f_collapse), &d->f_collapse, 0, 5000); y += 30;
+        slider_sweep_row(panel_x, y, sw, "Collapse <", TextFormat("%d", (int)d->f_collapse), &d->f_collapse, 0, 5000, &d->sweep_enabled[4]); y += 30;
         DrawText("Mutation", panel_x + 12, (int)y, 14, GRAY); y += 22;
-        slider_row(panel_x, y, sw, "INDEL rate", TextFormat("%.2f", d->f_indel_rate), &d->f_indel_rate, 0.0f, 3.0f); y += 30;
-        slider_row(panel_x, y, sw, "Mean size", TextFormat("%.1f", d->f_indel_size), &d->f_indel_size, 1.0f, 100.0f); y += 30;
+        slider_sweep_row(panel_x, y, sw, "INDEL rate", TextFormat("%.2f", d->f_indel_rate), &d->f_indel_rate, 0.0f, 3.0f, &d->sweep_enabled[0]); y += 30;
+        slider_sweep_row(panel_x, y, sw, "Mean size", TextFormat("%.1f", d->f_indel_size), &d->f_indel_size, 1.0f, 100.0f, &d->sweep_enabled[2]); y += 30;
         // Dup/del ratio: single dup:del SIZE ratio r (log slider centred at 1.0,
         // r in [0.001,1000]). Frequency is coupled as dup_bias = 1/(1+r) so the mean
         // array length stays constant (bigger events => proportionally rarer). The
         // four derived quantities (dup/del size and rate) are shown beneath.
         float ratio_e = log10f(d->f_size_ratio);
         const char *rfmt = d->f_size_ratio < 1.0f ? "%.3fx" : d->f_size_ratio < 10.0f ? "%.2fx" : "%.0fx";
-        slider_row(panel_x, y, sw, "Dup/del ratio", TextFormat(rfmt, d->f_size_ratio), &ratio_e, -3.0f, 3.0f);
+        slider_sweep_row(panel_x, y, sw, "Dup/del ratio", TextFormat(rfmt, d->f_size_ratio), &ratio_e, -3.0f, 3.0f, &d->sweep_enabled[3]);
         d->f_size_ratio = powf(10.0f, ratio_e); y += 28;
         {
             float r = d->f_size_ratio, sr = sqrtf(r);
@@ -809,7 +1002,12 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
             DrawText(TextFormat("del ~%.1f u @ %.2f/gen", d->f_indel_size / sr, d->f_indel_rate * (1.0f - pdup)),
                      panel_x + 14, (int)y, 10, (Color){90, 120, 90, 255}); y += 17;
         }
-        slider_row(panel_x, y, sw, "SNP rate", TextFormat("%.2f", d->f_snp_rate), &d->f_snp_rate, 0.0f, 1.0f); y += 32;
+        slider_sweep_row(panel_x, y, sw, "SNP rate", TextFormat("%.2f", d->f_snp_rate), &d->f_snp_rate, 0.0f, 1.0f, &d->sweep_enabled[1]); y += 32;
+        
+        DrawText("Sweep", panel_x + 12, (int)y, 14, GRAY); y += 22;
+        slider_row(panel_x, y, sw, "Sweep steps", TextFormat("%d", (int)d->f_sweep_steps), &d->f_sweep_steps, 2.0f, 50.0f); y += 30;
+        slider_row(panel_x, y, sw, "Max run time (min)", TextFormat("%.1f", d->f_sweep_max_min), &d->f_sweep_max_min, 0.5f, 30.0f); y += 32;
+        
         DrawText("Display", panel_x + 12, (int)y, 14, GRAY); y += 22;
         slider_row(panel_x, y, sw, "Display bars", TextFormat("%d", (int)d->f_nbins), &d->f_nbins, 16, 120); y += 26;
         DrawText("(adaptive; updates live)", panel_x + 14, (int)y, 10, (Color){90,120,90,255}); y += 18;
@@ -836,6 +1034,14 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         if (d->fit_text[i][0] != '\0') {
             DrawText(plots[i].title, panel_x + 14, (int)y, 11, LIGHTGRAY); y += 14;
             DrawText(d->fit_text[i], panel_x + 14, (int)y, 10, (Color){90, 120, 90, 255}); y += 16;
+        }
+    }
+
+    // Sweep log intercept
+    if (d->sweep_running && d->has_batch) {
+        float elapsed = GetTime() - d->sweep_batch_start_time;
+        if (complete || elapsed > d->f_sweep_max_min * 60.0) {
+            sweep_log_and_advance(d, &su, &sh, &bs, &bg, &si, &cp);
         }
     }
 }

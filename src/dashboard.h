@@ -35,6 +35,19 @@ typedef struct {
     Batch batch;
     bool  has_batch;       // batch_init has been called (needs free)
     bool  started;         // a run is/has been launched
+
+    // Parameter sweep state
+    bool  sweep_enabled[6];
+    float f_sweep_steps;
+    float f_sweep_max_min;
+    bool  sweep_running;
+    int   sweep_total_runs;
+    int   sweep_current_run;
+    double sweep_batch_start_time;
+    void *sweep_summary_file; // FILE*
+    char  sweep_dir[256];
+    int   sweep_indices[6];
+    int   sweep_counts[6];
 } Dashboard;
 
 void dashboard_init(Dashboard *d);
