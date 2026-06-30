@@ -48,6 +48,8 @@ typedef struct {
     char  sweep_dir[256];
     int   sweep_indices[6];
     int   sweep_counts[6];
+    bool  sweep_browsing;
+    int   browse_run_idx;
 } Dashboard;
 
 void dashboard_init(Dashboard *d);

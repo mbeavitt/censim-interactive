@@ -680,6 +680,98 @@ static void export_histograms(Dashboard *d, const char *forced_path, char *out, 
     snprintf(out, out_sz, "%s", path);
 }
 
+static int import_histograms(Dashboard *d, const char *path) {
+    if (d->has_batch) {
+        batch_request_stop(&d->batch);
+        batch_join(&d->batch);
+        batch_free(&d->batch);
+        d->has_batch = false;
+    }
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    
+    memset(&d->batch, 0, sizeof(Batch));
+    pthread_mutex_init(&d->batch.lock, NULL);
+    
+    char line[1024];
+    while (fgets(line, sizeof(line), f)) {
+        if (line[0] == '#') {
+            if (strncmp(line, "# trajectories=", 15) == 0) {
+                int traj, surv, coll;
+                if (sscanf(line, "# trajectories=%d survived=%d collapsed=%d", &traj, &surv, &coll) == 3) {
+                    d->batch.cfg.num_trajectories = traj;
+                    d->batch.survived = surv;
+                    d->batch.collapsed_count = coll;
+                    d->batch.completed = traj;
+                }
+            } else {
+                char metric[64];
+                float min_v, max_v;
+                int nbins, log_scale;
+                long total, underflow, overflow;
+                if (sscanf(line, "# %63[^:]: min=%f max=%f nbins=%d log_scale=%d total=%ld underflow=%ld overflow=%ld",
+                           metric, &min_v, &max_v, &nbins, &log_scale, &total, &underflow, &overflow) == 8) {
+                    Histogram *h = NULL;
+                    if (strcmp(metric, "unique_per_kb") == 0) h = &d->batch.h_unique_per_kb;
+                    else if (strcmp(metric, "hors_per_kb") == 0) h = &d->batch.h_hors_per_kb;
+                    else if (strcmp(metric, "block_size") == 0) h = &d->batch.h_block_size;
+                    else if (strcmp(metric, "block_gap") == 0) h = &d->batch.h_block_gap;
+                    else if (strcmp(metric, "similarity") == 0) h = &d->batch.h_similarity;
+                    else if (strcmp(metric, "diversity") == 0) h = &d->batch.h_diversity;
+                    else if (strcmp(metric, "composite") == 0) h = &d->batch.h_composite;
+                    else if (strcmp(metric, "collapse_gen") == 0) h = &d->batch.h_collapse_gen;
+                    
+                    if (h) {
+                        hist_init(h, min_v, max_v, nbins, log_scale);
+                        h->total = total;
+                        h->underflow = underflow;
+                        h->overflow = overflow;
+                    }
+                }
+            }
+        } else if (strncmp(line, "metric", 6) != 0) {
+            char metric[64];
+            int bin;
+            long count;
+            char *comma1 = strchr(line, ',');
+            if (comma1) {
+                int len = comma1 - line;
+                if (len > 63) len = 63;
+                strncpy(metric, line, len);
+                metric[len] = 0;
+                
+                char *comma5 = strrchr(line, ',');
+                if (comma5) {
+                    count = atol(comma5 + 1);
+                    bin = atoi(comma1 + 1);
+                    
+                    Histogram *h = NULL;
+                    if (strcmp(metric, "unique_per_kb") == 0) h = &d->batch.h_unique_per_kb;
+                    else if (strcmp(metric, "hors_per_kb") == 0) h = &d->batch.h_hors_per_kb;
+                    else if (strcmp(metric, "block_size") == 0) h = &d->batch.h_block_size;
+                    else if (strcmp(metric, "block_gap") == 0) h = &d->batch.h_block_gap;
+                    else if (strcmp(metric, "similarity") == 0) h = &d->batch.h_similarity;
+                    else if (strcmp(metric, "diversity") == 0) h = &d->batch.h_diversity;
+                    else if (strcmp(metric, "composite") == 0) h = &d->batch.h_composite;
+                    else if (strcmp(metric, "collapse_gen") == 0) h = &d->batch.h_collapse_gen;
+                    
+                    if (h && bin >= 0 && bin < h->nbins) {
+                        h->counts[bin] = count;
+                    }
+                }
+            }
+        }
+    }
+    fclose(f);
+    d->has_batch = true;
+    d->started = true;
+    d->batch.running = false;
+    d->batch.stop_requested = false;
+    d->batch.num_workers = 0;
+    d->batch.workers_running = 0;
+    return 1;
+}
+
 // A labelled slider row; returns the (possibly updated) value via the pointer.
 static void slider_row(float panel_x, float y, float w, const char *label,
                        const char *valtext, float *v, float lo, float hi) {
@@ -949,6 +1041,22 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     } else if (busy) {
         if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 36}, "#133# Stop"))
             batch_request_stop(&d->batch);
+    } else if (d->sweep_browsing) {
+        if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 36}, TextFormat("#131# Browse Mode (Run %d)", d->browse_run_idx + 1))) {
+            d->sweep_browsing = false;
+        }
+        if (GuiButton((Rectangle){panel_x + 12, y + 40, (panel_w - 28)/2, 28}, "#118# Prev")) {
+            d->browse_run_idx--;
+            char path[512];
+            snprintf(path, sizeof(path), "%s/histograms/run_%04d.csv", d->sweep_dir, d->browse_run_idx + 1);
+            if (!import_histograms(d, path)) d->browse_run_idx++;
+        }
+        if (GuiButton((Rectangle){panel_x + 16 + (panel_w - 28)/2, y + 40, (panel_w - 28)/2, 28}, "Next #119#")) {
+            d->browse_run_idx++;
+            char path[512];
+            snprintf(path, sizeof(path), "%s/histograms/run_%04d.csv", d->sweep_dir, d->browse_run_idx + 1);
+            if (!import_histograms(d, path)) d->browse_run_idx--;
+        }
     } else {
         if (sweep_selected) {
             if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 36}, "#131# Start Sweep")) sweep_start(d);
@@ -972,6 +1080,25 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     }
     if (!d->has_batch) GuiEnable();
     y += 32;
+    
+    if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 28}, "#05# Browse latest sweep")) {
+        FILE *p = popen("ls -td sweep_* 2>/dev/null | head -n 1", "r");
+        if (p) {
+            char latest[256];
+            if (fgets(latest, sizeof(latest), p)) {
+                latest[strcspn(latest, "\n")] = 0;
+                strncpy(d->sweep_dir, latest, sizeof(d->sweep_dir));
+                d->sweep_browsing = true;
+                d->browse_run_idx = 0;
+                char path[512];
+                snprintf(path, sizeof(path), "%s/histograms/run_%04d.csv", d->sweep_dir, d->browse_run_idx + 1);
+                import_histograms(d, path);
+            }
+            pclose(p);
+        }
+    }
+    y += 32;
+
     if (export_msg[0] && GetTime() - export_at < 6.0) {
         DrawText(export_msg, panel_x + 14, (int)y, 10, (Color){90, 200, 130, 255}); y += 14;
     }
