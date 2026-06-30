@@ -228,8 +228,8 @@ static void draw_ref_curve(const Histogram *ref, float px, float py, float pw, f
 static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                       bool log_y, bool autoscale, const Histogram *ref,
                       int target_bars, Color accent, int fit_type, int poly_order,
-                      double *out_cf, int *out_ncoeffs) {
-    if (out_ncoeffs) *out_ncoeffs = 0;
+                      char *out_fit_text) {
+    if (out_fit_text) out_fit_text[0] = '\0';
     Color axc = shade(accent, 0.55f);  // dimmed accent for border + axis text
     DrawRectangleRec(b, BG);
     DrawRectangleLinesEx(b, 1, axc);
@@ -407,9 +407,13 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     if ((fit_type == 1 || fit_type == 3) && nfit >= n_coeffs) {
         double cf[10];
         if (solve_sys(M_cheb, rhs_cheb, cf, n_coeffs)) {
-            if (out_cf && out_ncoeffs) {
-                *out_ncoeffs = n_coeffs;
-                for (int i = 0; i < n_coeffs; i++) out_cf[i] = cf[i];
+            if (out_fit_text) {
+                int pos = 0;
+                for (int i = 0; i < n_coeffs; i++) {
+                    int n = snprintf(out_fit_text + pos, 128 - pos, "c%d=%.2g ", i, cf[i]);
+                    if (n > 0) pos += n;
+                    if (pos >= 127) break;
+                }
             }
             int hv = 0; float xprev = 0, yprev = 0;
             for (int k = 0; k <= 64; k++) {
@@ -471,6 +475,10 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
         if (fit_type == 2) snprintf(fb, sizeof(fb), "Normal fit (mu=%.2g, std=%.2g)", mu, stddev);
         else snprintf(fb, sizeof(fb), "Gamma fit (k=%.2g, th=%.2g)", k_shape, theta);
         DrawText(fb, (int)px + 3, (int)py + 4, 10, FIT);
+        if (out_fit_text) {
+            if (fit_type == 2) snprintf(out_fit_text, 128, "mu=%.2g, std=%.2g", mu, stddev);
+            else snprintf(out_fit_text, 128, "k=%.2g, theta=%.2g", k_shape, theta);
+        }
     }
 
     // live median of the plotted data (dashed bright marker)
@@ -500,11 +508,13 @@ void dashboard_init(Dashboard *d) {
     d->f_size_ratio  = DEFAULT_DUP_DEL_SIZE_RATIO;
     d->elastic       = false;   // free drift by default
     d->f_elasticity  = 0.15f;
-    d->f_nbins       = 50.0f;
-    d->autoscale_x   = true;
-    d->show_advanced = false;
-    d->has_batch     = false;
-    d->started       = false;
+    d->f_nbins = 60.0f;
+    d->f_cheb_order = 6.0f;
+    for (int i = 0; i < 6; i++) {
+        d->plot_log_y[i] = false;
+        d->fit_text[i][0] = '\0';
+    }
+    d->autoscale_x = false;
     // Per-plot log-Y defaults (left->right, top->bottom): lin lin log / log lin log
     d->plot_log_y[0] = false;  // unique/kb   lin
     d->plot_log_y[1] = false;  // HORs/kb     lin
@@ -689,7 +699,7 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         else if (i == 4) fit_type = 3; // Power law
         draw_hist(cell[i], plots[i].title, plots[i].s, d->plot_log_y[i], d->autoscale_x,
                   ref, target_bars, accent, fit_type, (int)d->f_cheb_order,
-                  d->fit_cf[i], &d->fit_ncoeffs[i]);
+                  d->fit_text[i]);
         // per-plot clickable Y-scale toggle (top-right of the cell)
         Rectangle tg = { cell[i].x + cell[i].width - 52, cell[i].y + 3, 46, 15 };
         bool hov = CheckCollisionPointRec(mouse, tg);
@@ -821,18 +831,11 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     DrawRectangle(panel_x + 12, (int)y + 2, 12, 8, MED);  DrawText("live median of data", panel_x + 30, (int)y, 11, LIGHTGRAY); y += 16;
 
     y += 10;
-    DrawText("Fit Coefficients", panel_x + 12, (int)y, 14, GRAY); y += 22;
+    DrawText("Fit Parameters", panel_x + 12, (int)y, 14, GRAY); y += 22;
     for (int i = 0; i < 6; i++) {
-        if (d->fit_ncoeffs[i] > 0) {
+        if (d->fit_text[i][0] != '\0') {
             DrawText(plots[i].title, panel_x + 14, (int)y, 11, LIGHTGRAY); y += 14;
-            char cfbuf[256] = {0};
-            int pos = 0;
-            for (int k = 0; k < d->fit_ncoeffs[i]; k++) {
-                int n = snprintf(cfbuf + pos, sizeof(cfbuf) - pos, "c%d=%.2g ", k, d->fit_cf[i][k]);
-                if (n > 0) pos += n;
-                if (pos >= sizeof(cfbuf) - 1) break;
-            }
-            DrawText(cfbuf, panel_x + 14, (int)y, 10, (Color){90, 120, 90, 255}); y += 16;
+            DrawText(d->fit_text[i], panel_x + 14, (int)y, 10, (Color){90, 120, 90, 255}); y += 16;
         }
     }
 }
