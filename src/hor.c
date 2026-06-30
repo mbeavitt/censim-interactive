@@ -90,7 +90,7 @@ static HorBlock make_block(const unsigned int *hashes, int aStart, int run, int 
     b.similarity = 1.0f / (1.0f + mean_snv);
     int uniq = count_unique_block(hashes, aStart, run);
     b.diversity = (float)uniq / (float)run;
-    b.composite = (double)b.block_gap * b.similarity * b.block_size * b.diversity;
+    b.composite = (double)(b.block_gap > 0 ? b.block_gap : 1) * b.similarity * b.block_size * b.diversity;
     return b;
 }
 

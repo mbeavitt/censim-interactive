@@ -305,10 +305,10 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     double u_min = (lo_v > 0.0f) ? log(lo_v) : -10.0;
     double u_max = (hi_v > 0.0f) ? log(hi_v) : 10.0;
 
-    // Normal fit accumulators
+    // Normal / Gamma fit accumulators
     double mu = 0, stddev = 0;
     long total_for_normal = 0;
-    if (fit_type == 2 && s) {
+    if ((fit_type == 2 || fit_type == 4) && s) {
         double sx = 0, sx2 = 0;
         for (int i = 0; i < s->nbins; i++) {
             if (s->counts[i] > 0) {
@@ -438,16 +438,26 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
             char fb[40]; snprintf(fb, sizeof(fb), (fit_type == 1) ? "Chebyshev %d order fit" : "Power law fit", poly_order_actual);
             DrawText(fb, (int)px + 3, (int)py + 4, 10, FIT);
         }
-    } else if (fit_type == 2 && stddev > 0.0 && total_for_normal > 0) {
+    } else if ((fit_type == 2 || fit_type == 4) && stddev > 0.0 && total_for_normal > 0 && mu > 0.0) {
         int hv = 0; float xprev = 0, yprev = 0;
         double fine_bin_w = (s->max - s->min) / s->nbins;
+        double theta = (stddev * stddev) / mu;
+        double k_shape = (mu * mu) / (stddev * stddev);
         for (int k = 0; k <= 64; k++) {
             float f = (float)k / 64.0f;
             float xv = s->log_scale
                      ? powf(10.0f, log10f(lo_v) + (log10f(hi_v) - log10f(lo_v)) * f)
                      : lo_v + (hi_v - lo_v) * f;
-            double z_norm = (xv - mu) / stddev;
-            double pdf_x = (1.0 / (stddev * sqrt(2.0 * 3.14159265358979323846))) * exp(-0.5 * z_norm * z_norm);
+            double pdf_x = 0;
+            if (fit_type == 2) {
+                double z_norm = (xv - mu) / stddev;
+                pdf_x = (1.0 / (stddev * sqrt(2.0 * 3.14159265358979323846))) * exp(-0.5 * z_norm * z_norm);
+            } else if (fit_type == 4) {
+                if (xv > 0.0) {
+                    double log_pdf = (k_shape - 1.0) * log(xv) - (xv / theta) - k_shape * log(theta) - lgamma(k_shape);
+                    pdf_x = exp(log_pdf);
+                }
+            }
             double d = total_for_normal * pdf_x * (s->log_scale ? 1.0 : fine_bin_w);
             if (!(d > 0.0)) { hv = 0; continue; }
             float h01 = log_y ? (log10f((float)d) - lminv) / (lmaxv - lminv)
@@ -457,7 +467,9 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
             if (hv) DrawLineEx((Vector2){xprev, yprev}, (Vector2){X, Y}, 2.0f, FIT);
             xprev = X; yprev = Y; hv = 1;
         }
-        char fb[60]; snprintf(fb, sizeof(fb), "Normal fit (mu=%.2g, std=%.2g)", mu, stddev);
+        char fb[60];
+        if (fit_type == 2) snprintf(fb, sizeof(fb), "Normal fit (mu=%.2g, std=%.2g)", mu, stddev);
+        else snprintf(fb, sizeof(fb), "Gamma fit (k=%.2g, th=%.2g)", k_shape, theta);
         DrawText(fb, (int)px + 3, (int)py + 4, 10, FIT);
     }
 
@@ -671,7 +683,8 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         Color accent = ACCENT[i];
         const Histogram *ref = d->show_ref ? reference_get(&d->ref, plots[i].metric) : NULL;
         int fit_type = 0;
-        if (i == 0 || i == 1) fit_type = 2; // Normal
+        if (i == 0) fit_type = 2; // Normal
+        else if (i == 1) fit_type = 4; // Gamma
         else if (i == 2 || i == 3 || i == 5) fit_type = 1; // Chebyshev 6th
         else if (i == 4) fit_type = 3; // Power law
         draw_hist(cell[i], plots[i].title, plots[i].s, d->plot_log_y[i], d->autoscale_x,
