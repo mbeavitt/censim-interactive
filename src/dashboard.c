@@ -126,33 +126,34 @@ static const Color UNIF  = (Color){150, 150, 160, 255}; // uniform-model ghost (
 static const Color MED   = (Color){255, 255, 255, 255}; // live median of the plotted data
 static const Color FIT   = (Color){255, 235, 90, 255};  // power-law-with-cutoff fit (block size)
 
-// Solve the 7x7 system A x = rhs by Gaussian elimination with partial pivoting.
-// Used for the weighted least-squares 6th order Chebyshev fit.
-static int solve7(const double A[7][7], const double rhs[7], double out[7]) {
-    double M[7][7], b[7];
-    for(int i=0; i<7; i++) {
-        for(int j=0; j<7; j++) M[i][j] = A[i][j];
+// Solve the n x n system A x = rhs by Gaussian elimination with partial pivoting.
+// Used for the weighted least-squares polynomial fits.
+static int solve_sys(const double *A, const double *rhs, double *out, int n) {
+    double M[10][10], b[10];
+    if (n > 10) return 0;
+    for(int i=0; i<n; i++) {
+        for(int j=0; j<n; j++) M[i][j] = A[i*n + j];
         b[i] = rhs[i];
     }
-    for(int i=0; i<7; i++) {
+    for(int i=0; i<n; i++) {
         int piv = i;
-        for(int j=i+1; j<7; j++) {
+        for(int j=i+1; j<n; j++) {
             if (fabs(M[j][i]) > fabs(M[piv][i])) piv = j;
         }
         if (fabs(M[piv][i]) < 1e-12) return 0;
         if (piv != i) {
-            for(int j=i; j<7; j++) { double t = M[i][j]; M[i][j] = M[piv][j]; M[piv][j] = t; }
+            for(int j=i; j<n; j++) { double t = M[i][j]; M[i][j] = M[piv][j]; M[piv][j] = t; }
             double t = b[i]; b[i] = b[piv]; b[piv] = t;
         }
-        for(int j=i+1; j<7; j++) {
+        for(int j=i+1; j<n; j++) {
             double f = M[j][i] / M[i][i];
-            for(int k=i; k<7; k++) M[j][k] -= f * M[i][k];
+            for(int k=i; k<n; k++) M[j][k] -= f * M[i][k];
             b[j] -= f * b[i];
         }
     }
-    for(int i=6; i>=0; i--) {
+    for(int i=n-1; i>=0; i--) {
         out[i] = b[i];
-        for(int j=i+1; j<7; j++) out[i] -= M[i][j] * out[j];
+        for(int j=i+1; j<n; j++) out[i] -= M[i][j] * out[j];
         out[i] /= M[i][i];
     }
     return 1;
@@ -226,7 +227,7 @@ static void draw_ref_curve(const Histogram *ref, float px, float py, float pw, f
 
 static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                       bool log_y, bool autoscale, const Histogram *ref,
-                      int target_bars, Color accent, bool fit_cutoff) {
+                      int target_bars, Color accent, int fit_type) {
     Color axc = shade(accent, 0.55f);  // dimmed accent for border + axis text
     DrawRectangleRec(b, BG);
     DrawRectangleLinesEx(b, 1, axc);
@@ -294,10 +295,34 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     static float dens[DASH_MAXBINS];  // single-threaded UI: reused each frame
     float dmax_v = 0.0f, dmin_v = 0.0f;
     int seen = 0;
-    // 6th order Chebyshev fit accumulators (weighted least squares of ln density)
-    double M_cheb[7][7] = {0}, rhs_cheb[7] = {0}; int nfit=0;
+    // Polynomial fit accumulators (weighted least squares of ln density)
+    int poly_order = (fit_type == 1) ? 6 : (fit_type == 3 ? 1 : 0);
+    int n_coeffs = poly_order + 1;
+    double M_cheb[49] = {0}, rhs_cheb[7] = {0}; int nfit=0;
     double u_min = (lo_v > 0.0f) ? log(lo_v) : -10.0;
     double u_max = (hi_v > 0.0f) ? log(hi_v) : 10.0;
+
+    // Normal fit accumulators
+    double mu = 0, stddev = 0;
+    long total_for_normal = 0;
+    if (fit_type == 2 && s) {
+        double sx = 0, sx2 = 0;
+        for (int i = 0; i < s->nbins; i++) {
+            if (s->counts[i] > 0) {
+                double x = s->log_scale ? sqrt((double)bin_edge(s, i) * bin_edge(s, i+1)) 
+                                        : 0.5 * (bin_edge(s, i) + bin_edge(s, i+1));
+                sx += x * s->counts[i];
+                sx2 += x * x * s->counts[i];
+                total_for_normal += s->counts[i];
+            }
+        }
+        if (total_for_normal > 1) {
+            mu = sx / total_for_normal;
+            double var = (sx2 - sx * sx / total_for_normal) / (total_for_normal - 1);
+            if (var > 0) stddev = sqrt(var);
+        }
+    }
+
     for (int j = 0; j < bars; j++) {
         int fs = b0 + (int)((long)j       * avail / bars);
         int fe = b0 + (int)((long)(j + 1) * avail / bars);
@@ -312,11 +337,8 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
             if (!seen || v < dmin_v) dmin_v = v;
             seen = 1;
         }
-        if (fit_cutoff && v > 0.0f && c > 0) {
+        if ((fit_type == 1 || fit_type == 3) && v > 0.0f && c > 0) {
             // Bar centre (geometric for log x). Each populated bar gets EQUAL weight:
-            // counts here span ~7 decades, so weighting by count would let the head
-            // bars drown out the declining tail (where any cutoff actually shows up).
-            // Equal weighting fits the log-log line the eye sees across the full range.
             double xc = s->log_scale ? sqrt((double)bin_edge(s, fs) * bin_edge(s, fe))
                                      : 0.5 * (bin_edge(s, fs) + bin_edge(s, fe));
             if (xc > 0.0) {
@@ -325,10 +347,10 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                 double T[7];
                 T[0] = 1.0;
                 T[1] = z;
-                for (int k = 2; k < 7; k++) T[k] = 2.0 * z * T[k-1] - T[k-2];
-                for (int row = 0; row < 7; row++) {
-                    for (int col = 0; col < 7; col++) {
-                        M_cheb[row][col] += T[row] * T[col];
+                for (int k = 2; k < n_coeffs; k++) T[k] = 2.0 * z * T[k-1] - T[k-2];
+                for (int row = 0; row < n_coeffs; row++) {
+                    for (int col = 0; col < n_coeffs; col++) {
+                        M_cheb[row * n_coeffs + col] += T[row] * T[col];
                     }
                     rhs_cheb[row] += T[row] * y;
                 }
@@ -378,12 +400,10 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     // real-data distribution overlay (red density curve)
     draw_ref_curve(ref, px, py, pw, ph, lo_v, hi_v, s->log_scale, log_y);
 
-    // 6th order Chebyshev polynomial overlay (block size). Fit f(x) as a 6th degree
-    // polynomial of z(ln(x)), where z maps the ln(x) window to [-1, 1].
-    // Solved by ordinary (count-weighted) least squares in log space.
-    if (fit_cutoff && nfit >= 7) {
+    // Polynomial overlays (Chebyshev or Power law)
+    if ((fit_type == 1 || fit_type == 3) && nfit >= n_coeffs) {
         double cf[7];
-        if (solve7(M_cheb, rhs_cheb, cf)) {
+        if (solve_sys(M_cheb, rhs_cheb, cf, n_coeffs)) {
             int hv = 0; float xprev = 0, yprev = 0;
             for (int k = 0; k <= 64; k++) {
                 float f = (float)k / 64.0f;
@@ -396,9 +416,9 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                 double T[7];
                 T[0] = 1.0;
                 T[1] = z;
-                for (int i = 2; i < 7; i++) T[i] = 2.0 * z * T[i-1] - T[i-2];
+                for (int i = 2; i < n_coeffs; i++) T[i] = 2.0 * z * T[i-1] - T[i-2];
                 double log_d = 0;
-                for (int i = 0; i < 7; i++) log_d += cf[i] * T[i];
+                for (int i = 0; i < n_coeffs; i++) log_d += cf[i] * T[i];
                 double d = exp(log_d);
                 if (!(d > 0.0)) { hv = 0; continue; }
                 float h01 = log_y ? (log10f((float)d) - lminv) / (lmaxv - lminv)
@@ -408,9 +428,30 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                 if (hv) DrawLineEx((Vector2){xprev, yprev}, (Vector2){X, Y}, 2.0f, FIT);
                 xprev = X; yprev = Y; hv = 1;
             }
-            char fb[40]; snprintf(fb, sizeof(fb), "Chebyshev 6th order fit");
+            char fb[40]; snprintf(fb, sizeof(fb), (fit_type == 1) ? "Chebyshev 6th order fit" : "Power law fit");
             DrawText(fb, (int)px + 3, (int)py + 4, 10, FIT);
         }
+    } else if (fit_type == 2 && stddev > 0.0 && total_for_normal > 0) {
+        int hv = 0; float xprev = 0, yprev = 0;
+        double fine_bin_w = (s->max - s->min) / s->nbins;
+        for (int k = 0; k <= 64; k++) {
+            float f = (float)k / 64.0f;
+            float xv = s->log_scale
+                     ? powf(10.0f, log10f(lo_v) + (log10f(hi_v) - log10f(lo_v)) * f)
+                     : lo_v + (hi_v - lo_v) * f;
+            double z_norm = (xv - mu) / stddev;
+            double pdf_x = (1.0 / (stddev * sqrt(2.0 * 3.14159265358979323846))) * exp(-0.5 * z_norm * z_norm);
+            double d = total_for_normal * pdf_x * (s->log_scale ? 1.0 : fine_bin_w);
+            if (!(d > 0.0)) { hv = 0; continue; }
+            float h01 = log_y ? (log10f((float)d) - lminv) / (lmaxv - lminv)
+                              : (float)d / dmax_v;
+            if (h01 < 0.0f) h01 = 0.0f; else if (h01 > 1.0f) h01 = 1.0f;
+            float X = px + f * pw, Y = py + ph * (1.0f - h01);
+            if (hv) DrawLineEx((Vector2){xprev, yprev}, (Vector2){X, Y}, 2.0f, FIT);
+            xprev = X; yprev = Y; hv = 1;
+        }
+        char fb[60]; snprintf(fb, sizeof(fb), "Normal fit (mu=%.2g, std=%.2g)", mu, stddev);
+        DrawText(fb, (int)px + 3, (int)py + 4, 10, FIT);
     }
 
     // live median of the plotted data (dashed bright marker)
@@ -622,8 +663,12 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     for (int i = 0; i < 6; i++) {
         Color accent = ACCENT[i];
         const Histogram *ref = d->show_ref ? reference_get(&d->ref, plots[i].metric) : NULL;
+        int fit_type = 0;
+        if (i == 0 || i == 1) fit_type = 2; // Normal
+        else if (i == 2 || i == 3 || i == 5) fit_type = 1; // Chebyshev 6th
+        else if (i == 4) fit_type = 3; // Power law
         draw_hist(cell[i], plots[i].title, plots[i].s, d->plot_log_y[i], d->autoscale_x,
-                  ref, target_bars, accent, i == 2 /* block size: power-law cutoff fit */);
+                  ref, target_bars, accent, fit_type);
         // per-plot clickable Y-scale toggle (top-right of the cell)
         Rectangle tg = { cell[i].x + cell[i].width - 52, cell[i].y + 3, 46, 15 };
         bool hov = CheckCollisionPointRec(mouse, tg);
