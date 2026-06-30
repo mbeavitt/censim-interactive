@@ -124,6 +124,26 @@ static const Color BAR   = (Color){0, 200, 110, 255};   // default accent (panel
 static const Color REAL  = (Color){255, 70, 70, 255};   // A. thaliana ghost
 static const Color UNIF  = (Color){150, 150, 160, 255}; // uniform-model ghost (unused for now)
 static const Color MED   = (Color){255, 255, 255, 255}; // live median of the plotted data
+static const Color FIT   = (Color){255, 235, 90, 255};  // power-law-with-cutoff fit (block size)
+
+// Solve the 3x3 system A x = rhs by Cramer's rule. Returns 0 if (near-)singular.
+// Used for the weighted least-squares plane fit behind the block-size overlay.
+static int solve3(const double A[3][3], const double rhs[3], double out[3]) {
+    double det = A[0][0]*(A[1][1]*A[2][2]-A[1][2]*A[2][1])
+               - A[0][1]*(A[1][0]*A[2][2]-A[1][2]*A[2][0])
+               + A[0][2]*(A[1][0]*A[2][1]-A[1][1]*A[2][0]);
+    if (fabs(det) < 1e-30) return 0;
+    for (int k = 0; k < 3; k++) {
+        double M[3][3];
+        for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) M[i][j] = A[i][j];
+        for (int i = 0; i < 3; i++) M[i][k] = rhs[i];
+        double d = M[0][0]*(M[1][1]*M[2][2]-M[1][2]*M[2][1])
+                 - M[0][1]*(M[1][0]*M[2][2]-M[1][2]*M[2][0])
+                 + M[0][2]*(M[1][0]*M[2][1]-M[1][1]*M[2][0]);
+        out[k] = d / det;
+    }
+    return 1;
+}
 
 // Per-plot accent palette: a cohesive "cool scientific" run from mint -> cyan ->
 // sky -> aqua -> lime, anchored by a warm amber on the COMPOSITE summary metric.
@@ -193,7 +213,7 @@ static void draw_ref_curve(const Histogram *ref, float px, float py, float pw, f
 
 static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                       bool log_y, bool autoscale, const Histogram *ref,
-                      int target_bars, Color accent) {
+                      int target_bars, Color accent, bool fit_cutoff) {
     Color axc = shade(accent, 0.55f);  // dimmed accent for border + axis text
     DrawRectangleRec(b, BG);
     DrawRectangleLinesEx(b, 1, axc);
@@ -261,6 +281,9 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     static float dens[DASH_MAXBINS];  // single-threaded UI: reused each frame
     float dmax_v = 0.0f, dmin_v = 0.0f;
     int seen = 0;
+    // Power-law-with-cutoff fit accumulators (weighted least squares of ln density
+    // against the regressors ln(x) and x). See the solve + overlay below.
+    double Sw=0, Su=0, Sv=0, Suu=0, Svv=0, Suv=0, Sy=0, Suy=0, Svy=0; int nfit=0;
     for (int j = 0; j < bars; j++) {
         int fs = b0 + (int)((long)j       * avail / bars);
         int fe = b0 + (int)((long)(j + 1) * avail / bars);
@@ -274,6 +297,21 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
             if (!seen || v > dmax_v) dmax_v = v;
             if (!seen || v < dmin_v) dmin_v = v;
             seen = 1;
+        }
+        if (fit_cutoff && v > 0.0f && c > 0) {
+            // Bar centre (geometric for log x). Each populated bar gets EQUAL weight:
+            // counts here span ~7 decades, so weighting by count would let the head
+            // bars drown out the declining tail (where any cutoff actually shows up).
+            // Equal weighting fits the log-log line the eye sees across the full range.
+            double xc = s->log_scale ? sqrt((double)bin_edge(s, fs) * bin_edge(s, fe))
+                                     : 0.5 * (bin_edge(s, fs) + bin_edge(s, fe));
+            if (xc > 0.0) {
+                double u = log(xc), vv = xc, y = log((double)v);
+                Sw  += 1.0;       Su  += u;          Sv  += vv;
+                Suu += u*u;       Svv += vv*vv;      Suv += u*vv;
+                Sy  += y;         Suy += u*y;        Svy += vv*y;
+                nfit++;
+            }
         }
     }
     if (dmax_v <= 0.0f) dmax_v = 1.0f;
@@ -318,6 +356,51 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     // real-data distribution overlay (red density curve)
     draw_ref_curve(ref, px, py, pw, ph, lo_v, hi_v, s->log_scale, log_y);
 
+    // Power-law-with-cutoff overlay (block size). Fit f(x) = C * x^-alpha * e^-lambda x
+    // by ordinary (count-weighted) least squares in log space: ln f = b0 - alpha*ln x
+    // - lambda*x is LINEAR in the regressors ln(x) and x, so a single closed-form 3x3
+    // solve recovers all three coefficients -- no iteration, cheap per frame. NB this
+    // fits the eyeballed log-log line, not a rigorous (MLE) tail estimator. lambda is
+    // the cutoff strength: lambda->0 means a pure power law (a straight log-log line),
+    // larger lambda means the tail decays exponentially fast.
+    if (fit_cutoff && nfit >= 3) {
+        double A[3][3] = {{Sw, Su, Sv}, {Su, Suu, Suv}, {Sv, Suv, Svv}};
+        double rhs[3]  = {Sy, Suy, Svy}, cf[3];
+        if (solve3(A, rhs, cf)) {
+            double b0 = cf[0], beta1 = cf[1], beta2 = cf[2];  // alpha=-beta1, lambda=-beta2
+            // The cutoff model is only a valid (decaying) size distribution for
+            // lambda >= 0. If the unconstrained fit wants lambda < 0 (data is a pure
+            // power law, or heavier-tailed), pin lambda = 0 and refit the straight
+            // log-log line -- otherwise e^-lambda*x grows and the overlay curls back
+            // up into a non-physical U. lambda pinned at 0 reads as "pure power law".
+            if (-beta2 < 0.0) {
+                double denom = Sw*Suu - Su*Su;
+                if (fabs(denom) > 1e-30) {
+                    beta1 = (Sw*Suy - Su*Sy) / denom;
+                    b0    = (Sy - beta1*Su) / Sw;
+                    beta2 = 0.0;
+                }
+            }
+            int hv = 0; float xprev = 0, yprev = 0;
+            for (int k = 0; k <= 64; k++) {
+                float f = (float)k / 64.0f;
+                float xv = s->log_scale
+                         ? powf(10.0f, log10f(lo_v) + (log10f(hi_v) - log10f(lo_v)) * f)
+                         : lo_v + (hi_v - lo_v) * f;
+                double d = exp(b0 + beta1 * log((double)xv) + beta2 * (double)xv);
+                if (!(d > 0.0)) { hv = 0; continue; }
+                float h01 = log_y ? (log10f((float)d) - lminv) / (lmaxv - lminv)
+                                  : (float)d / dmax_v;
+                if (h01 < 0.0f) h01 = 0.0f; else if (h01 > 1.0f) h01 = 1.0f;
+                float X = px + f * pw, Y = py + ph * (1.0f - h01);
+                if (hv) DrawLineEx((Vector2){xprev, yprev}, (Vector2){X, Y}, 2.0f, FIT);
+                xprev = X; yprev = Y; hv = 1;
+            }
+            char fb[40]; snprintf(fb, sizeof(fb), "fit lambda=%.4g", -beta2);
+            DrawText(fb, (int)px + 3, (int)py + 4, 10, FIT);
+        }
+    }
+
     // live median of the plotted data (dashed bright marker)
     float med = snap_median(s);
     if (!isnan(med)) {
@@ -350,13 +433,13 @@ void dashboard_init(Dashboard *d) {
     d->show_advanced = false;
     d->has_batch     = false;
     d->started       = false;
-    // Per-plot log-Y defaults (left->right, top->bottom): lin lin log / lin log lin
+    // Per-plot log-Y defaults (left->right, top->bottom): lin lin log / log lin log
     d->plot_log_y[0] = false;  // unique/kb   lin
     d->plot_log_y[1] = false;  // HORs/kb     lin
     d->plot_log_y[2] = true;   // block size  log
-    d->plot_log_y[3] = false;  // block gap   lin
-    d->plot_log_y[4] = true;   // similarity  log
-    d->plot_log_y[5] = false;  // composite   lin
+    d->plot_log_y[3] = true;   // block gap   log
+    d->plot_log_y[4] = false;  // similarity  lin
+    d->plot_log_y[5] = true;   // composite   log
 
     // Real-data reference: try $CENSIM_REFERENCE, ./reference.dat, then next to the
     // executable. Absent is fine -- the overlay just won't draw.
@@ -401,6 +484,66 @@ static void launch(Dashboard *d) {
     batch_start(&d->batch);
     d->has_batch = true;
     d->started = true;
+}
+
+// Dump every batch histogram to a tidy CSV at full internal resolution. One row
+// per (metric, bin); per-metric metadata (range, scale, totals, under/overflow)
+// rides in '#'-prefixed comment lines so analysis tools (pandas comment='#') skip
+// them. Edges are reported as the bin really was binned -- log-spaced for log-scale
+// metrics -- so bin_lo/bin_center/bin_hi reconstruct the axis exactly. Returns the
+// written path in `out` (caller-sized), or leaves out[0]=0 on failure.
+static void export_histograms(Dashboard *d, char *out, size_t out_sz) {
+    out[0] = 0;
+    if (!d->has_batch) return;
+
+    char path[256];
+    time_t now = time(NULL);
+    struct tm tm; localtime_r(&now, &tm);
+    char stamp[32];
+    strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tm);
+    snprintf(path, sizeof(path), "censim_hist_%s.csv", stamp);
+
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+
+    Batch *b = &d->batch;
+    pthread_mutex_lock(&b->lock);
+
+    struct { const char *name; const Histogram *h; } cols[] = {
+        {"unique_per_kb", &b->h_unique_per_kb},
+        {"hors_per_kb",   &b->h_hors_per_kb},
+        {"block_size",    &b->h_block_size},
+        {"block_gap",     &b->h_block_gap},
+        {"similarity",    &b->h_similarity},
+        {"diversity",     &b->h_diversity},
+        {"composite",     &b->h_composite},
+        {"collapse_gen",  &b->h_collapse_gen},
+    };
+    int ncols = (int)(sizeof(cols) / sizeof(cols[0]));
+
+    fprintf(f, "# censim histogram export %s\n", stamp);
+    fprintf(f, "# trajectories=%d survived=%d collapsed=%d\n",
+            b->cfg.num_trajectories, b->survived, b->collapsed_count);
+    for (int c = 0; c < ncols; c++) {
+        const Histogram *h = cols[c].h;
+        fprintf(f, "# %s: min=%g max=%g nbins=%d log_scale=%d "
+                   "total=%ld underflow=%ld overflow=%ld\n",
+                cols[c].name, h->min, h->max, h->nbins, h->log_scale,
+                h->total, h->underflow, h->overflow);
+    }
+
+    fprintf(f, "metric,bin,bin_lo,bin_center,bin_hi,count\n");
+    for (int c = 0; c < ncols; c++) {
+        const Histogram *h = cols[c].h;
+        for (int i = 0; i < h->nbins; i++)
+            fprintf(f, "%s,%d,%g,%g,%g,%ld\n", cols[c].name, i,
+                    hist_bin_lo(h, i), hist_bin_center(h, i),
+                    hist_bin_lo(h, i + 1), h->counts[i]);
+    }
+
+    pthread_mutex_unlock(&b->lock);
+    fclose(f);
+    snprintf(out, out_sz, "%s", path);
 }
 
 // A labelled slider row; returns the (possibly updated) value via the pointer.
@@ -468,7 +611,7 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         Color accent = ACCENT[i];
         const Histogram *ref = d->show_ref ? reference_get(&d->ref, plots[i].metric) : NULL;
         draw_hist(cell[i], plots[i].title, plots[i].s, d->plot_log_y[i], d->autoscale_x,
-                  ref, target_bars, accent);
+                  ref, target_bars, accent, i == 2 /* block size: power-law cutoff fit */);
         // per-plot clickable Y-scale toggle (top-right of the cell)
         Rectangle tg = { cell[i].x + cell[i].width - 52, cell[i].y + 3, 46, 15 };
         bool hov = CheckCollisionPointRec(mouse, tg);
@@ -533,6 +676,24 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
             launch(d);
     }
     y += 46;
+
+    // Export the current histogram data to a timestamped CSV (cwd). Disabled until a
+    // batch exists; shows the written filename briefly after a successful save.
+    static char export_msg[280] = {0};
+    static double export_at = 0.0;
+    if (!d->has_batch) GuiDisable();
+    if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 28}, "#02# Export data (CSV)")) {
+        char path[256];
+        export_histograms(d, path, sizeof(path));
+        if (path[0]) snprintf(export_msg, sizeof(export_msg), "Saved %s", path);
+        else         snprintf(export_msg, sizeof(export_msg), "Export failed");
+        export_at = GetTime();
+    }
+    if (!d->has_batch) GuiEnable();
+    y += 32;
+    if (export_msg[0] && GetTime() - export_at < 6.0) {
+        DrawText(export_msg, panel_x + 14, (int)y, 10, (Color){90, 200, 130, 255}); y += 14;
+    }
 
     // Advanced (collapsible)
     if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 24},
