@@ -383,6 +383,7 @@ static bool get_save_fasta_path(char *out, size_t out_size, int generation) {
 #include "simulation.h"
 #include "colorizer.h"
 #include "dashboard.h"
+#include "stained_glass.h"
 
 // ============================================================================
 // Grid rendering
@@ -511,6 +512,10 @@ int main(void) {
     RenderTexture2D grid_rt = LoadRenderTexture(monitor_w, monitor_h);
     SetTextureFilter(grid_rt.texture, TEXTURE_FILTER_POINT);
     bool grid_dirty = true;
+
+    // Live self-identity ("stained glass") panel, bottom-left above the stats.
+    StainedGlass stained_glass;
+    sg_init(&stained_glass);
     int  cached_unique = 0;
     int  last_w_px = monitor_w, last_h_px = monitor_h;
 
@@ -633,6 +638,16 @@ int main(void) {
 
         // Measured dup/del statistics vs theory (overlay, top-left of the grid)
         draw_measure_cluster(&stats_history, &sim, 12, 28);
+
+        // Live self-identity panel, bottom-left, sitting just above the mission
+        // control panel. Square, ~30% of the viewport height. Recomputes at ~5 fps.
+        {
+            int mc_h = mc_minimized ? 24 : mc_panel_height;
+            float sg_side = 0.45f * screen_height;
+            Rectangle sg_box = { 12.0f, screen_height - mc_h - sg_side - 12.0f,
+                                 sg_side, sg_side };
+            sg_update_draw(&stained_glass, &sim, sg_box, 1.0 / 30.0);  // ~30 fps target
+        }
 
         // Draw panel background
         DrawRectangle(panel_x, 0, PANEL_WIDTH, screen_height, (Color){25, 25, 30, 255});
@@ -1056,6 +1071,7 @@ int main(void) {
     dashboard_free(&dash);
     sim_free(&sim);
     colorizer_free(&colorizer);
+    sg_free(&stained_glass);
     UnloadRenderTexture(grid_rt);
     CloseWindow();
 

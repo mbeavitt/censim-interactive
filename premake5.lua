@@ -88,3 +88,41 @@ project "bench"
     filter "system:linux"
         architecture "x86_64"
         links { "m" }
+
+-- Standalone raylib viewer for "stained glass" self-identity plots of a FASTA
+-- export. All-vs-all identity is approximated from MinHash sketches so the
+-- O(N^2) matrix stays cheap. Build: premake5 gmake2 && make config=release stained_glass
+project "stained_glass"
+    kind "ConsoleApp"
+    language "C"
+    cdialect "gnu99"
+    targetdir "bin/%{cfg.buildcfg}"
+    objdir "build/obj/%{cfg.buildcfg}"
+    files { "tools/stained_glass_view.c" }
+
+    filter "configurations:Debug"
+        defines { "DEBUG" }
+        symbols "On"
+        optimize "Debug"
+
+    filter "configurations:Release"
+        defines { "NDEBUG" }
+        optimize "Speed"
+
+    filter "system:macosx"
+        architecture "arm64"
+        includedirs { "/opt/homebrew/include" }
+        libdirs { "/opt/homebrew/lib" }
+        links {
+            "raylib",
+            "OpenGL.framework",
+            "Cocoa.framework",
+            "IOKit.framework",
+            "CoreVideo.framework"
+        }
+
+    filter "system:linux"
+        architecture "x86_64"
+        includedirs { "/usr/local/include" }
+        libdirs { "/usr/local/lib" }
+        links { "raylib", "GL", "m", "pthread", "dl", "rt", "X11" }

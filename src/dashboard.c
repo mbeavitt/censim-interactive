@@ -1065,6 +1065,7 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         }
     }
     y += 46;
+    if (d->sweep_browsing) y += 40;
 
     // Export the current histogram data to a timestamped CSV (cwd). Disabled until a
     // batch exists; shows the written filename briefly after a successful save.
