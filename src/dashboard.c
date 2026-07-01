@@ -196,7 +196,7 @@ static float g_gdens[DASH_MAXBINS];  // single-threaded UI: reused each frame
 static void draw_ghost_overlay(const Histogram *ref, float px, float py, float pw, float ph,
                                float lo_v, float hi_v, int log_x, bool log_y, int bars,
                                int fit_type, int poly_order, bool do_bars, bool do_fit,
-                               float bar_alpha) {
+                               float bar_alpha, bool count_y) {
     if (!ref || ref->total == 0 || bars < 1) return;
     if (bars > DASH_MAXBINS) bars = DASH_MAXBINS;
 
@@ -220,7 +220,7 @@ static void draw_ghost_overlay(const Histogram *ref, float px, float py, float p
     for (int j = 0; j < bars; j++) {
         float vlo = GVAT((float)j / bars), vhi = GVAT((float)(j + 1) / bars);
         float w = vhi - vlo; if (w <= 0.0f) w = 1.0f;
-        g_gdens[j] /= w;
+        if (!count_y) g_gdens[j] /= w;   // count mode keeps raw sim/array counts
         if (g_gdens[j] > 0.0f) { if (!seen || g_gdens[j] > dmax) dmax = g_gdens[j];
                                  if (!seen || g_gdens[j] < dmin) dmin = g_gdens[j]; seen = 1; }
     }
@@ -308,13 +308,15 @@ static void draw_ghost_overlay(const Histogram *ref, float px, float py, float p
                 #define GPDF(xv) (fit_type==2 \
                     ? exp(-0.5*(((xv)-mu)/sd)*(((xv)-mu)/sd)) / (sd*sqrt(2*M_PI)) \
                     : ((xv)>0 && k_sh>0 ? pow((xv),k_sh-1)*exp(-(xv)/th)/(pow(th,k_sh)*tgamma(k_sh)) : 0))
+                // count mode weights the pdf by local bar width so the curve matches count bars
+                #define GWLOC(fr) (count_y ? (double)(GVAT(fminf((fr)+0.5f/bars,1.0f)) - GVAT(fmaxf((fr)-0.5f/bars,0.0f))) : 1.0)
                 double pmax = 0;                       // scale the pdf peak to the ghost peak
-                for (int kk = 0; kk <= 64; kk++) { double p = GPDF(GVAT((float)kk/64.0f)); if (p > pmax) pmax = p; }
+                for (int kk = 0; kk <= 64; kk++) { float fr=(float)kk/64.0f; double p = GPDF(GVAT(fr))*GWLOC(fr); if (p > pmax) pmax = p; }
                 if (pmax > 0) {
                     int hv = 0; float xp = 0, yp = 0;
                     for (int kk = 0; kk <= 64; kk++) {
                         float fr = (float)kk/64.0f; float xv = GVAT(fr);
-                        double dd = GPDF(xv) / pmax * dmax;
+                        double dd = GPDF(xv) * GWLOC(fr) / pmax * dmax;
                         if (!(dd > 0)) { hv = 0; continue; }
                         float h01 = GH01((float)dd); if (h01<0) h01=0; else if (h01>1) h01=1;
                         float X = px + fr*pw, Y = py + ph*(1.0f - h01);
@@ -323,6 +325,7 @@ static void draw_ghost_overlay(const Histogram *ref, float px, float py, float p
                     }
                 }
                 #undef GPDF
+                #undef GWLOC
             }
         }
     }
@@ -332,8 +335,9 @@ static void draw_ghost_overlay(const Histogram *ref, float px, float py, float p
 
 static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                       bool log_y, bool autoscale, const Histogram *ref,
-                      int target_bars, Color accent, int fit_type, int poly_order,
-                      bool ghost_bars, bool ghost_fit, float ghost_alpha, char *out_fit_text) {
+                      int target_bars, Color accent, int fit_type, int poly_order, bool log_x,
+                      bool count_y, bool ghost_bars, bool ghost_fit, float ghost_alpha,
+                      char *out_fit_text) {
     if (out_fit_text) out_fit_text[0] = '\0';
     Color axc = shade(accent, 0.55f);  // dimmed accent for border + axis text
     DrawRectangleRec(b, BG);
@@ -386,6 +390,14 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     int avail = b1 - b0 + 1;          // fine bins inside the displayed window
     float lo_v = bin_edge(s, b0), hi_v = bin_edge(s, b1 + 1);
 
+    // A log-X display can't place a zero/negative lower bound (linear metrics like
+    // similarity or HORs/kb start at 0), which would collapse the whole axis. Floor
+    // lo_v to the first positive bin edge so log-X still works for those.
+    if (log_x && lo_v <= 0.0f) {
+        lo_v = bin_edge(s, b0 + 1);
+        if (lo_v <= 0.0f) lo_v = (hi_v > 0.0f) ? hi_v * 1e-4f : 1e-6f;
+    }
+
     // Adaptive bin sizer: re-aggregate the window's fine bins into a consistent
     // number of on-screen bars so every plot shows comparable resolution, no matter
     // how wide its populated region is. We can only merge fine bins, never split
@@ -435,41 +447,51 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
         }
     }
 
+    // Aggregate the window's fine bins into `bars` display bars BY VALUE on the
+    // chosen display axis (log_x), so the x-scale can be toggled independently of
+    // how the data was binned. Density = counts / linear bar width; the display
+    // bars' value centres feed the fits below.
+    static double bar_xc[DASH_MAXBINS];   // single-threaded UI: reused each frame
+    static double bar_w[DASH_MAXBINS];    // value width of each display bar
+    (void)avail;
+    #define DVAT(fr) (log_x ? powf(10.0f, log10f(lo_v) + (log10f(hi_v) - log10f(lo_v)) * (fr)) \
+                            : lo_v + (hi_v - lo_v) * (fr))
+    for (int j = 0; j < bars; j++) dens[j] = 0.0f;
+    for (int i = b0; i <= b1; i++) {
+        if (s->counts[i] == 0) continue;
+        float cen = s->log_scale ? sqrtf(bin_edge(s, i) * bin_edge(s, i + 1))
+                                 : 0.5f * (bin_edge(s, i) + bin_edge(s, i + 1));
+        float fr = val_frac(cen, lo_v, hi_v, log_x);
+        if (fr < 0.0f || fr >= 1.0f) continue;
+        int j = (int)(fr * bars); if (j >= bars) j = bars - 1;
+        dens[j] += (float)s->counts[i];
+    }
     for (int j = 0; j < bars; j++) {
-        int fs = b0 + (int)((long)j       * avail / bars);
-        int fe = b0 + (int)((long)(j + 1) * avail / bars);
-        if (fe <= fs) fe = fs + 1;
-        long c = 0;
-        for (int i = fs; i < fe && i <= b1; i++) c += s->counts[i];
-        float w = s->log_scale ? (bin_edge(s, fe) - bin_edge(s, fs)) : (float)(fe - fs);
-        float v = (w > 0.0f) ? (float)c / w : 0.0f;
-        dens[j] = v;
+        float vlo = DVAT((float)j / bars), vhi = DVAT((float)(j + 1) / bars);
+        float w = vhi - vlo; if (w <= 0.0f) w = 1.0f;
+        bar_w[j] = w;
+        // count_y (per-array metrics): keep raw counts = "how many sims in this bin";
+        // otherwise a density (count per unit x) that recovers shape across log bins.
+        if (!count_y) dens[j] /= w;
+        bar_xc[j] = log_x ? sqrt((double)vlo * vhi) : 0.5 * (vlo + vhi);
+        float v = dens[j];
         if (v > 0.0f) {
             if (!seen || v > dmax_v) dmax_v = v;
             if (!seen || v < dmin_v) dmin_v = v;
             seen = 1;
         }
-        if ((fit_type == 1 || fit_type == 3) && v > 0.0f && c > 0) {
-            // Bar centre (geometric for log x). Each populated bar gets EQUAL weight:
-            double xc = s->log_scale ? sqrt((double)bin_edge(s, fs) * bin_edge(s, fe))
-                                     : 0.5 * (bin_edge(s, fs) + bin_edge(s, fe));
-            if (xc > 0.0) {
-                double u = log(xc), y = log((double)v);
-                if (u < fit_u_lo) fit_u_lo = u;
-                if (u > fit_u_hi) fit_u_hi = u;
-                double z = (u_max > u_min) ? 2.0 * (u - u_min) / (u_max - u_min) - 1.0 : 0.0;
-                double T[10];
-                T[0] = 1.0;
-                T[1] = z;
-                for (int k = 2; k < n_coeffs; k++) T[k] = 2.0 * z * T[k-1] - T[k-2];
-                for (int row = 0; row < n_coeffs; row++) {
-                    for (int col = 0; col < n_coeffs; col++) {
-                        M_cheb[row * n_coeffs + col] += T[row] * T[col];
-                    }
-                    rhs_cheb[row] += T[row] * y;
-                }
-                nfit++;
+        if ((fit_type == 1 || fit_type == 3) && v > 0.0f && bar_xc[j] > 0.0) {
+            double u = log(bar_xc[j]), y = log((double)v);
+            if (u < fit_u_lo) fit_u_lo = u;
+            if (u > fit_u_hi) fit_u_hi = u;
+            double z = (u_max > u_min) ? 2.0 * (u - u_min) / (u_max - u_min) - 1.0 : 0.0;
+            double T[10]; T[0] = 1.0; T[1] = z;
+            for (int k = 2; k < n_coeffs; k++) T[k] = 2.0 * z * T[k-1] - T[k-2];
+            for (int row = 0; row < n_coeffs; row++) {
+                for (int col = 0; col < n_coeffs; col++) M_cheb[row*n_coeffs+col] += T[row]*T[col];
+                rhs_cheb[row] += T[row] * y;
             }
+            nfit++;
         }
     }
     if (dmax_v <= 0.0f) dmax_v = 1.0f;
@@ -500,20 +522,20 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     DrawText(fmt(dmax_v), (int)b.x + 3, (int)py - 4, 9, axc);
     DrawText(log_y ? fmt(dmin_v) : "0", (int)b.x + 3, (int)(py + ph - 8), 9, axc);
     DrawText(log_y ? "log" : "lin", (int)b.x + 3, (int)(py + ph/2), 9, axc);
-    DrawText(s->log_scale ? "dens" : "cnt", (int)b.x + 3, (int)(py + ph/2 + 11), 8, shade(accent, 0.3f));
+    DrawText(count_y ? "sims" : (s->log_scale ? "dens" : "cnt"), (int)b.x + 3, (int)(py + ph/2 + 11), 8, shade(accent, 0.3f));
 
     // x-axis: 3 ticks across the displayed window (geometric mid for log)
-    float xmid = s->log_scale ? sqrtf(lo_v * hi_v) : 0.5f * (lo_v + hi_v);
+    float xmid = log_x ? sqrtf(lo_v * hi_v) : 0.5f * (lo_v + hi_v);
     int ytick = (int)(py + ph + 2);
     DrawText(fmt(lo_v), (int)px, ytick, 9, axc);
     const char *m = fmt(xmid); DrawText(m, (int)(px + pw/2 - MeasureText(m, 9)/2), ytick, 9, axc);
     const char *x = fmt(hi_v); DrawText(x, (int)(px + pw - MeasureText(x, 9)), ytick, 9, axc);
-    const char *xs = s->log_scale ? "log x" : "lin x";
+    const char *xs = log_x ? "log x" : "lin x";
     DrawText(xs, (int)(px + pw - MeasureText(xs, 9)), (int)py - 2, 9, shade(accent, 0.3f));
 
-    // real-data distribution overlay (red density curve)
-    draw_ghost_overlay(ref, px, py, pw, ph, lo_v, hi_v, s->log_scale, log_y, bars,
-                       fit_type, poly_order, ghost_bars, ghost_fit, ghost_alpha);
+    // ghost overlay (faded bars + fit), on the same display axis
+    draw_ghost_overlay(ref, px, py, pw, ph, lo_v, hi_v, log_x, log_y, bars,
+                       fit_type, poly_order, ghost_bars, ghost_fit, ghost_alpha, count_y);
 
     // Polynomial overlays (Chebyshev or Power law)
     if ((fit_type == 1 || fit_type == 3) && nfit >= n_coeffs) {
@@ -522,11 +544,7 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
             double sse = 0.0;
             for (int j = 0; j < bars; j++) {
                 if (dens[j] <= 0.0f) continue;
-                int fs = b0 + (int)((long)j       * avail / bars);
-                int fe = b0 + (int)((long)(j + 1) * avail / bars);
-                if (fe <= fs) fe = fs + 1;
-                double xc = s->log_scale ? sqrt((double)bin_edge(s, fs) * bin_edge(s, fe))
-                                         : 0.5 * (bin_edge(s, fs) + bin_edge(s, fe));
+                double xc = bar_xc[j];
                 if (xc > 0.0) {
                     double u = log(xc);
                     double z = (u_max > u_min) ? 2.0 * (u - u_min) / (u_max - u_min) - 1.0 : 0.0;
@@ -555,9 +573,7 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
             int hv = 0; float xprev = 0, yprev = 0;
             for (int k = 0; k <= 64; k++) {
                 float f = (float)k / 64.0f;
-                float xv = s->log_scale
-                         ? powf(10.0f, log10f(lo_v) + (log10f(hi_v) - log10f(lo_v)) * f)
-                         : lo_v + (hi_v - lo_v) * f;
+                float xv = DVAT(f);
                 if (xv <= 0.0) continue;
                 double u = log(xv);
                 // Don't extrapolate far past the fitted data: break the line outside
@@ -584,14 +600,11 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
         }
     } else if ((fit_type == 2 || fit_type == 4) && stddev > 0.0 && total_for_normal > 0 && mu > 0.0) {
         int hv = 0; float xprev = 0, yprev = 0;
-        double fine_bin_w = (s->max - s->min) / s->nbins;
         double theta = (stddev * stddev) / mu;
         double k_shape = (mu * mu) / (stddev * stddev);
         for (int k = 0; k <= 64; k++) {
             float f = (float)k / 64.0f;
-            float xv = s->log_scale
-                     ? powf(10.0f, log10f(lo_v) + (log10f(hi_v) - log10f(lo_v)) * f)
-                     : lo_v + (hi_v - lo_v) * f;
+            float xv = DVAT(f);
             double pdf_x = 0;
             if (fit_type == 2) {
                 double z_norm = (xv - mu) / stddev;
@@ -602,7 +615,9 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                     pdf_x = exp(log_pdf);
                 }
             }
-            double d = total_for_normal * pdf_x * (s->log_scale ? 1.0 : fine_bin_w);
+            // density: total*pdf; count mode: expected sims in the local bar (×width)
+            double wloc = count_y ? (DVAT(fminf(f + 0.5f/bars, 1.0f)) - DVAT(fmaxf(f - 0.5f/bars, 0.0f))) : 1.0;
+            double d = total_for_normal * pdf_x * wloc;
             if (!(d > 0.0)) { hv = 0; continue; }
             float h01 = log_y ? (log10f((float)d) - lminv) / (lmaxv - lminv)
                               : (float)d / dmax_v;
@@ -619,11 +634,7 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
         double sse = 0.0;
         for (int j = 0; j < bars; j++) {
             if (dens[j] <= 0.0f) continue;
-            int fs = b0 + (int)((long)j       * avail / bars);
-            int fe = b0 + (int)((long)(j + 1) * avail / bars);
-            if (fe <= fs) fe = fs + 1;
-            double xc = s->log_scale ? sqrt((double)bin_edge(s, fs) * bin_edge(s, fe))
-                                     : 0.5 * (bin_edge(s, fs) + bin_edge(s, fe));
+            double xc = bar_xc[j];
             double pdf_x = 0;
             if (fit_type == 2) {
                 double z_norm = (xc - mu) / stddev;
@@ -634,7 +645,7 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                     pdf_x = exp(log_pdf);
                 }
             }
-            double d_pred = total_for_normal * pdf_x * (s->log_scale ? 1.0 : fine_bin_w);
+            double d_pred = total_for_normal * pdf_x * (count_y ? bar_w[j] : 1.0);
             double diff = dens[j] - d_pred;
             sse += diff * diff;
         }
@@ -648,7 +659,7 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     // live median of the plotted data (dashed bright marker)
     float med = snap_median(s);
     if (!isnan(med)) {
-        float f = val_frac(med, lo_v, hi_v, s->log_scale);
+        float f = val_frac(med, lo_v, hi_v, log_x);
         if (f >= 0 && f <= 1) {
             float xx = px + f * pw;
             for (int yy = (int)py; yy < (int)(py + ph); yy += 7)
@@ -657,6 +668,7 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
             DrawText(mb, (int)xx + 2, (int)(py + ph - 11), 9, MED);
         }
     }
+    #undef DVAT
 }
 
 void dashboard_init(Dashboard *d) {
@@ -688,6 +700,13 @@ void dashboard_init(Dashboard *d) {
     d->plot_log_y[3] = true;   // block gap   log
     d->plot_log_y[4] = false;  // similarity  lin
     d->plot_log_y[5] = true;   // composite   log
+    // Per-plot log-X defaults: match each metric's natural (binned) scale.
+    d->plot_log_x[0] = false;  // unique/kb   lin
+    d->plot_log_x[1] = false;  // HORs/kb     lin
+    d->plot_log_x[2] = true;   // block size  log
+    d->plot_log_x[3] = true;   // block gap   log
+    d->plot_log_x[4] = false;  // similarity  lin
+    d->plot_log_x[5] = true;   // composite   log
 
     // Real-data reference: try $CENSIM_REFERENCE, ./reference.dat, then next to the
     // executable. Absent is fine -- the overlay just won't draw.
@@ -1195,16 +1214,24 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         else if (i == 2 || i == 3 || i == 5) fit_type = 1; // Chebyshev 6th
         else if (i == 4) fit_type = 3; // Power law
         draw_hist(cell[i], plots[i].title, plots[i].s, d->plot_log_y[i], d->autoscale_x,
-                  ref, target_bars, accent, fit_type, (int)d->f_cheb_order,
+                  ref, target_bars, accent, fit_type, (int)d->f_cheb_order, d->plot_log_x[i],
+                  i < 2,   // unique/kb + HORs/kb are per-array: show frequency (sim count)
                   d->show_ref && d->ghost_bars, d->show_ref && d->ghost_fit, d->ghost_alpha,
                   d->fit_text[i]);
-        // per-plot clickable Y-scale toggle (top-right of the cell)
+        // per-plot clickable Y- and X-scale toggles (top-right of the cell)
         Rectangle tg = { cell[i].x + cell[i].width - 52, cell[i].y + 3, 46, 15 };
         bool hov = CheckCollisionPointRec(mouse, tg);
         DrawRectangleRec(tg, hov ? shade(accent, 0.3f) : (Color){25,35,25,255});
         DrawRectangleLinesEx(tg, 1, shade(accent, 0.55f));
         DrawText(d->plot_log_y[i] ? "Y:log" : "Y:lin", (int)tg.x + 5, (int)tg.y + 3, 9, accent);
         if (hov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) d->plot_log_y[i] = !d->plot_log_y[i];
+
+        Rectangle tx = { cell[i].x + cell[i].width - 102, cell[i].y + 3, 46, 15 };
+        bool hovx = CheckCollisionPointRec(mouse, tx);
+        DrawRectangleRec(tx, hovx ? shade(accent, 0.3f) : (Color){25,35,25,255});
+        DrawRectangleLinesEx(tx, 1, shade(accent, 0.55f));
+        DrawText(d->plot_log_x[i] ? "X:log" : "X:lin", (int)tx.x + 5, (int)tx.y + 3, 9, accent);
+        if (hovx && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) d->plot_log_x[i] = !d->plot_log_x[i];
     }
 
     // ----- status bar -----

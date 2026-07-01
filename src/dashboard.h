@@ -26,6 +26,7 @@ typedef struct {
     float f_cheb_order;    // target polynomial order for Chebyshev fit
     char fit_text[6][128]; // stores the text readout of the fit for each plot
     bool  plot_log_y[6];   // per-plot log-scale Y toggle
+    bool  plot_log_x[6];   // per-plot log-scale X (display axis) toggle
     bool  autoscale_x;     // fit each plot's x-window to the data (~99%)
     bool  show_advanced;   // advanced controls collapsible state
 

@@ -54,7 +54,7 @@ int reference_load_run(Reference *r, const char *path) {
         if (line[0] == '#') {
             char name[24]; float mn, mx; int lg, nb; long tot, uf, of;
             if (sscanf(line, "# %23[^:]: min=%f max=%f nbins=%d log_scale=%d total=%ld underflow=%ld overflow=%ld",
-                       name, &mn, &mx, &lg, &nb, &tot, &uf, &of) == 8) {
+                       name, &mn, &mx, &nb, &lg, &tot, &uf, &of) == 8) {
                 if (r->count < cap && nb > 0 && nb <= 100000) {
                     RefMetric *m = &r->metrics[r->count++];
                     strncpy(m->name, name, sizeof(m->name) - 1);
