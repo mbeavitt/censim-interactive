@@ -9,6 +9,52 @@
 
 // Forward declare for history functions
 #include "simulation.h"
+#include "stained_glass.h"   // SG_PAL_* ids used in the theme table below
+
+// ============================================================================
+// Theme + UI settings (colour schemes, UI scale, resizable panels)
+// ============================================================================
+
+typedef struct {
+    const char *name;
+    Color bg;         // app background
+    Color panel;      // panel / box background
+    Color header;     // panel header strip / stat box
+    Color accent;     // accent lines + titles
+    Color text;       // primary text
+    Color text_dim;   // secondary text
+    Color gui_base;   // raygui control fill
+    Color gui_border; // raygui control border
+    int   sg_pal;     // stained-glass palette id
+} Theme;
+
+static const Theme THEMES[] = {
+    { "Midnight",  { 30, 30, 35,255},{ 25, 25, 30,255},{ 40, 40, 44,255},{  0,180,  0,255},{235,235,235,255},{150,150,160,255},{ 45, 45, 52,255},{ 90, 90,100,255}, SG_PAL_TURBO   },
+    { "Amber"    , { 18, 14,  8,255},{ 26, 20, 10,255},{ 40, 32, 14,255},{255,176,  0,255},{255,214,140,255},{180,140, 70,255},{ 40, 32, 14,255},{120, 90, 30,255}, SG_PAL_MAGMA   },
+    { "Ocean",     { 14, 22, 32,255},{ 18, 28, 40,255},{ 26, 40, 56,255},{  0,200,220,255},{210,230,240,255},{130,160,180,255},{ 26, 40, 56,255},{ 50, 90,120,255}, SG_PAL_ICE     },
+    { "Grape",     { 24, 18, 32,255},{ 32, 24, 44,255},{ 44, 32, 60,255},{200,120,255,255},{230,215,245,255},{160,140,185,255},{ 40, 30, 56,255},{110, 80,150,255}, SG_PAL_VIRIDIS },
+    { "Paper",     {235,232,224,255},{245,243,237,255},{220,216,206,255},{ 40, 90,160,255},{ 30, 30, 34,255},{ 90, 90,100,255},{225,222,214,255},{160,156,146,255}, SG_PAL_MONO    },
+};
+#define NUM_THEMES ((int)(sizeof(THEMES) / sizeof(THEMES[0])))
+
+static Theme g_theme;              // active theme (copied from THEMES[g_theme_idx])
+static int   g_theme_idx  = 0;
+float        g_ui_scale   = 1.0f;  // non-static: shared with dashboard.c for text scaling
+static int   g_panel_width;        // runtime, resizable + scaled (init in main)
+static int   g_tile_size;          // runtime, scaled (init in main)
+
+// Font-scaling wrappers so raw text tracks the same UI scale as raygui controls.
+// All raw DrawText/MeasureText calls in this file are routed through these.
+static int scaled_font(int size) {
+    int s = (int)(size * g_ui_scale + 0.5f);
+    return s < 1 ? 1 : s;
+}
+static void DrawTextS(const char *t, int x, int y, int size, Color c) {
+    DrawText(t, x, y, scaled_font(size), c);
+}
+static int MeasureTextS(const char *t, int size) {
+    return MeasureText(t, scaled_font(size));
+}
 
 // ============================================================================
 // Stats History for Mission Control plots
@@ -110,8 +156,8 @@ static void draw_plot(Rectangle bounds, const char *title, float *values, int co
     DrawRectangleLinesEx(bounds, 2, grid_color);
 
     // Title with glow effect
-    DrawText(title, bounds.x + 8, bounds.y + 4, 14, grid_color);
-    DrawText(title, bounds.x + 7, bounds.y + 3, 14, line_color);
+    DrawTextS(title, bounds.x + 8, bounds.y + 4, 14, grid_color);
+    DrawTextS(title, bounds.x + 7, bounds.y + 3, 14, line_color);
 
     // Grid lines (retro scanline effect)
     for (int i = 1; i < 4; i++) {
@@ -124,7 +170,7 @@ static void draw_plot(Rectangle bounds, const char *title, float *values, int co
     }
 
     if (count < 2) {
-        DrawText("AWAITING DATA...", bounds.x + bounds.width/2 - 60, bounds.y + bounds.height/2 - 8, 12, grid_color);
+        DrawTextS("AWAITING DATA...", bounds.x + bounds.width/2 - 60, bounds.y + bounds.height/2 - 8, 12, grid_color);
         return;
     }
 
@@ -169,8 +215,8 @@ static void draw_plot(Rectangle bounds, const char *title, float *values, int co
     } else {
         snprintf(val_buf, sizeof(val_buf), "%.3f", values[count - 1]);
     }
-    int val_w = MeasureText(val_buf, 12);
-    DrawText(val_buf, bounds.x + bounds.width - val_w - 8, bounds.y + 5, 12, line_color);
+    int val_w = MeasureTextS(val_buf, 12);
+    DrawTextS(val_buf, bounds.x + bounds.width - val_w - 8, bounds.y + 5, 12, line_color);
 }
 
 // Draw integer values (convert to float for plotting)
@@ -189,7 +235,7 @@ static void draw_measure_plot(Rectangle b, const char *title, const float *vals,
                               float theo, Color line) {
     DrawRectangleRec(b, (Color){15, 20, 15, 235});
     DrawRectangleLinesEx(b, 1, (Color){line.r, line.g, line.b, 110});
-    DrawText(title, (int)b.x + 5, (int)b.y + 3, 10, line);
+    DrawTextS(title, (int)b.x + 5, (int)b.y + 3, 10, line);
 
     float px = b.x + 4, py = b.y + 16, pw = b.width - 8, ph = b.height - 30;
 
@@ -221,9 +267,9 @@ static void draw_measure_plot(Rectangle b, const char *title, const float *vals,
 
     // readout: current measured value (left) vs theoretical (right)
     float cur = count > 0 ? vals[count - 1] : 0.0f;
-    DrawText(TextFormat("%.2f", cur), (int)b.x + 5, (int)(b.y + b.height) - 12, 9, line);
+    DrawTextS(TextFormat("%.2f", cur), (int)b.x + 5, (int)(b.y + b.height) - 12, 9, line);
     const char *tt = TextFormat("th %.2f", theo);
-    DrawText(tt, (int)(b.x + b.width) - MeasureText(tt, 9) - 4, (int)(b.y + b.height) - 12, 9,
+    DrawTextS(tt, (int)(b.x + b.width) - MeasureTextS(tt, 9) - 4, (int)(b.y + b.height) - 12, 9,
              (Color){210, 210, 210, 200});
 }
 
@@ -241,7 +287,7 @@ static void draw_measure_cluster(const StatsHistory *h, const Simulation *sim, i
     const Color DEL = (Color){255, 180, 0, 255};   // amber
     int pw = 150, ph = 64, gap = 6;
 
-    DrawText("MEASURED vs THEORY (dup/del)", x, y - 13, 10, (Color){150, 170, 150, 255});
+    DrawTextS("MEASURED vs THEORY (dup/del)", x, y - 13, 10, (Color){150, 170, 150, 255});
     draw_measure_plot((Rectangle){x,              y,            pw, ph}, "DUP SIZE (u/event)",
                       h->m_dup_size, h->count, th_dup_size, DUP);
     draw_measure_plot((Rectangle){x + pw + gap,   y,            pw, ph}, "DEL SIZE (u/event)",
@@ -259,7 +305,7 @@ static void draw_mission_control(StatsHistory *h, int screen_width, int screen_h
     int panel_width = screen_width - ctrl_panel_width;  // Stop at control panel
 
     // Panel background with border
-    DrawRectangle(0, panel_y, panel_width, panel_height, (Color){20, 25, 20, 245});
+    DrawRectangle(0, panel_y, panel_width, panel_height, g_theme.panel);
     DrawLine(0, panel_y, panel_width, panel_y, (Color){0, 180, 0, 200});
     DrawLine(0, panel_y + 1, panel_width, panel_y + 1, (Color){0, 100, 0, 150});
 
@@ -267,9 +313,9 @@ static void draw_mission_control(StatsHistory *h, int screen_width, int screen_h
 
     // Title (centered in stats panel area)
     const char *mc_title = "[ STATISTICS ]";
-    int title_w = MeasureText(mc_title, 14);
-    DrawText(mc_title, panel_width / 2 - title_w / 2 + 1, panel_y + 6, 14, (Color){0, 60, 0, 255});
-    DrawText(mc_title, panel_width / 2 - title_w / 2, panel_y + 5, 14, (Color){0, 200, 0, 255});
+    int title_w = MeasureTextS(mc_title, 14);
+    DrawTextS(mc_title, panel_width / 2 - title_w / 2 + 1, panel_y + 6, 14, (Color){0, 60, 0, 255});
+    DrawTextS(mc_title, panel_width / 2 - title_w / 2, panel_y + 5, 14, (Color){0, 200, 0, 255});
 
     // Three plots side by side
     int plot_margin = 15;
@@ -385,6 +431,88 @@ static bool get_save_fasta_path(char *out, size_t out_size, int generation) {
 #include "dashboard.h"
 #include "stained_glass.h"
 
+// Apply a colour-scheme preset: copy its colours into g_theme and push the
+// chrome colours into raygui + the stained-glass palette.
+static void apply_theme(int idx, StainedGlass *sg) {
+    if (idx < 0) idx = 0; if (idx >= NUM_THEMES) idx = NUM_THEMES - 1;
+    g_theme_idx = idx;
+    g_theme = THEMES[idx];
+
+    GuiSetStyle(DEFAULT, BACKGROUND_COLOR,     ColorToInt(g_theme.panel));
+    GuiSetStyle(DEFAULT, BASE_COLOR_NORMAL,    ColorToInt(g_theme.gui_base));
+    GuiSetStyle(DEFAULT, BASE_COLOR_FOCUSED,   ColorToInt(g_theme.header));
+    GuiSetStyle(DEFAULT, BASE_COLOR_PRESSED,   ColorToInt(g_theme.accent));
+    GuiSetStyle(DEFAULT, BORDER_COLOR_NORMAL,  ColorToInt(g_theme.gui_border));
+    GuiSetStyle(DEFAULT, BORDER_COLOR_FOCUSED, ColorToInt(g_theme.accent));
+    GuiSetStyle(DEFAULT, TEXT_COLOR_NORMAL,    ColorToInt(g_theme.text));
+    GuiSetStyle(DEFAULT, TEXT_COLOR_FOCUSED,   ColorToInt(g_theme.text));
+    GuiSetStyle(DEFAULT, TEXT_COLOR_PRESSED,   ColorToInt(g_theme.bg));
+    GuiSetStyle(DEFAULT, LINE_COLOR,           ColorToInt(g_theme.gui_border));
+
+    if (sg) sg_set_palette(sg, g_theme.sg_pal);
+}
+
+// Base (design) sizes to scale from, so scaling never compounds.
+enum { UI_BASE_PANEL = PANEL_WIDTH, UI_BASE_TILE = TILE_SIZE };
+
+// Apply a UI scale: raygui text size, array tile size, and (rescaled) panel width.
+static void apply_ui_scale(float scale) {
+    g_ui_scale = scale;
+    GuiSetStyle(DEFAULT, TEXT_SIZE, (int)(16 * scale + 0.5f));
+    g_tile_size   = (int)(UI_BASE_TILE * scale + 0.5f);   if (g_tile_size < 2) g_tile_size = 2;
+    g_panel_width = (int)(UI_BASE_PANEL * scale + 0.5f);
+}
+
+// Thin vertical grip drawn on the control-panel splitter so it's discoverable.
+static void draw_panel_grip(int x, int h, bool hot) {
+    Color c = hot ? g_theme.accent : g_theme.gui_border;
+    DrawRectangle(x - 1, 0, 2, h, c);
+    int cy = h / 2;
+    for (int i = -1; i <= 1; i++)
+        DrawRectangle(x - 1, cy + i * 8, 2, 4, g_theme.accent);
+}
+
+// Options button + modal (UI scale, colour scheme). Uses function-local static
+// state so it can be dropped into either view's draw path; drawn last = topmost.
+static void draw_options_ui(int sw, int sh, StainedGlass *sg) {
+    static const float SCALES[] = { 0.75f, 1.0f, 1.25f, 1.5f };
+    static bool show = false;
+    static int  scale_idx = 1;
+
+    if (GuiButton((Rectangle){ (float)(sw - 116), (float)(sh - 38), 104, 26 }, "#142#Options")) show = true;
+    if (!show) return;
+
+    int mw = 440, mh = 250, margin = 20;
+    Rectangle win = { (float)(sw - mw - margin), (float)(sh - mh - margin), (float)mw, (float)mh };
+    DrawRectangle(0, 0, sw, sh, (Color){ 0, 0, 0, 130 });
+    if (GuiWindowBox(win, "#142# Options")) { show = false; return; }
+
+    int cx = (int)win.x + 16, cy = (int)win.y + 44;
+
+    GuiLabel((Rectangle){ (float)cx, (float)cy, 200, 20 }, "UI scale");
+    cy += 22;
+    int sprev = scale_idx;
+    GuiToggleGroup((Rectangle){ (float)cx, (float)cy, 64, 28 }, "0.75x;1.0x;1.25x;1.5x", &scale_idx);
+    if (scale_idx != sprev) apply_ui_scale(SCALES[scale_idx]);
+    cy += 50;
+
+    GuiLabel((Rectangle){ (float)cx, (float)cy, 200, 20 }, "Colour scheme");
+    cy += 22;
+    char names[256] = "";
+    for (int i = 0; i < NUM_THEMES; i++) {
+        strcat(names, THEMES[i].name);
+        if (i < NUM_THEMES - 1) strcat(names, ";");
+    }
+    int tprev = g_theme_idx;
+    GuiToggleGroup((Rectangle){ (float)cx, (float)cy, 78, 28 }, names, &tprev);
+    if (tprev != g_theme_idx) apply_theme(tprev, sg);
+    cy += 46;
+
+    DrawTextS("Tip: drag the panel's left edge or the self-identity",
+             cx, cy, 11, g_theme.text_dim);
+    DrawTextS("box corner to resize.", cx, cy + 14, 11, g_theme.text_dim);
+}
+
 // ============================================================================
 // Grid rendering
 // ============================================================================
@@ -406,10 +534,10 @@ static void draw_grid(Simulation *sim, Colorizer *colorizer, int offset_x, int o
 
         Color c = colorizer_get_color(colorizer, sim->array.units[i]);
 
-        int x = offset_x + col * TILE_SIZE;
-        int y = offset_y + row * TILE_SIZE;
+        int x = offset_x + col * g_tile_size;
+        int y = offset_y + row * g_tile_size;
 
-        DrawRectangle(x, y, TILE_SIZE - 1, TILE_SIZE - 1, c);
+        DrawRectangle(x, y, g_tile_size - 1, g_tile_size - 1, c);
     }
 }
 
@@ -426,46 +554,46 @@ static void draw_stats(Simulation *sim, int unique, int x, int y, bool running) 
 
     char buf[256];
 
-    DrawRectangle(x, y, PANEL_WIDTH - 20, 215, (Color){40, 40, 40, 220});
-    DrawRectangleLines(x, y, PANEL_WIDTH - 20, 215, LIGHTGRAY);
+    DrawRectangle(x, y, g_panel_width - 20, 215, g_theme.header);
+    DrawRectangleLines(x, y, g_panel_width - 20, 215, LIGHTGRAY);
 
     int line = y + 15;
     int spacing = 22;
 
-    DrawText("Statistics", x + 10, line, 20, WHITE);
+    DrawTextS("Statistics", x + 10, line, 20, WHITE);
     line += spacing + 10;
 
     snprintf(buf, sizeof(buf), "Generation: %d", sim->stats.generation);
-    DrawText(buf, x + 10, line, 18, RAYWHITE);
+    DrawTextS(buf, x + 10, line, 18, RAYWHITE);
     line += spacing;
 
     snprintf(buf, sizeof(buf), "Array size: %d", sim->array.num_units);
-    DrawText(buf, x + 10, line, 18, RAYWHITE);
+    DrawTextS(buf, x + 10, line, 18, RAYWHITE);
     line += spacing;
 
     snprintf(buf, sizeof(buf), "Unique seqs: %d", unique);
-    DrawText(buf, x + 10, line, 18, RAYWHITE);
+    DrawTextS(buf, x + 10, line, 18, RAYWHITE);
     line += spacing;
 
     snprintf(buf, sizeof(buf), "Diversity: %.4f", diversity);
-    DrawText(buf, x + 10, line, 18, RAYWHITE);
+    DrawTextS(buf, x + 10, line, 18, RAYWHITE);
     line += spacing + 10;
 
-    DrawText("Mutations", x + 10, line, 16, GRAY);
+    DrawTextS("Mutations", x + 10, line, 16, GRAY);
     line += spacing - 4;
 
     snprintf(buf, sizeof(buf), "SNPs: %d  Dups: %d  Dels: %d",
              sim->stats.snp_count, sim->stats.dup_count, sim->stats.del_count);
-    DrawText(buf, x + 10, line, 16, RAYWHITE);
+    DrawTextS(buf, x + 10, line, 16, RAYWHITE);
     line += spacing;
 
     // Status indicator
     if (sim->stats.collapsed) {
-        DrawText("COLLAPSED!", x + 10, line, 18, RED);
+        DrawTextS("COLLAPSED!", x + 10, line, 18, RED);
     } else if (running) {
-        DrawText("RUNNING", x + 10, line, 18, GREEN);
+        DrawTextS("RUNNING", x + 10, line, 18, GREEN);
     } else {
-        DrawText("PAUSED", x + 10, line, 18, GRAY);
+        DrawTextS("PAUSED", x + 10, line, 18, GRAY);
     }
 }
 
@@ -479,6 +607,11 @@ int main(void) {
     InitWindow(800, 600, "Centromere Evolution Simulator");
     SetTargetFPS(60);
 
+    // Initialise runtime UI-scale globals (g_panel_width / g_tile_size) before
+    // anything reads them. Theme (which also sets the stained-glass palette) is
+    // applied after the panel is created, below.
+    apply_ui_scale(1.0f);
+
     // Get monitor dimensions
     int monitor = GetCurrentMonitor();
     int monitor_w = GetMonitorWidth(monitor);
@@ -490,10 +623,12 @@ int main(void) {
     MaximizeWindow();
 
     // Calculate grid based on monitor width
-    int grid_width = (monitor_w - PANEL_WIDTH - 40) / TILE_SIZE;  // Extra margin
+    int grid_width = (monitor_w - g_panel_width - 40) / g_tile_size;  // Extra margin
     if (grid_width < 10) grid_width = 10;
     printf("Grid width: %d tiles\n", grid_width);
     int last_screen_width = monitor_w;
+    int last_panel_width = g_panel_width;
+    int last_tile_size = g_tile_size;
 
     // Initialize simulation
     Simulation sim;
@@ -522,6 +657,11 @@ int main(void) {
     // UI state
     bool running = false;
     float gens_per_frame = 100.0f;
+
+    // Resize-handle state
+    bool  panel_dragging = false;    // dragging the control-panel splitter
+    bool  sg_dragging = false;       // dragging the stained-glass box corner
+    float sg_side = 0.0f;            // stained-glass box side in px (0 = init from height)
     int step_size = 10000;
     bool show_advanced = false;
     char step_size_text[16] = "10000";
@@ -543,8 +683,8 @@ int main(void) {
     Dashboard dash;
     dashboard_init(&dash);
 
-    // raygui style
-    GuiSetStyle(DEFAULT, TEXT_SIZE, 16);
+    // raygui style + initial colour scheme (also sets the stained-glass palette)
+    apply_theme(g_theme_idx, &stained_glass);
 
     printf("Centromere Evolution Simulator\n");
     printf("Controls:\n");
@@ -570,14 +710,33 @@ int main(void) {
         // Get current screen dimensions
         int screen_width = GetScreenWidth();
         int screen_height = GetScreenHeight();
-        int panel_x = screen_width - PANEL_WIDTH;
+        int panel_x = screen_width - g_panel_width;
 
-        // Recalculate grid width if screen size changed significantly (>100px)
-        if (abs(screen_width - last_screen_width) > 100) {
-            grid_width = (screen_width - PANEL_WIDTH - 20) / TILE_SIZE;
+        // Control-panel splitter: drag the panel's left edge to resize it.
+        Vector2 mouse_pos = GetMousePosition();
+        Rectangle splitter = { (float)panel_x - 4, 0, 8, (float)screen_height };
+        bool over_splitter = CheckCollisionPointRec(mouse_pos, splitter);
+        if (over_splitter && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) panel_dragging = true;
+        if (panel_dragging) {
+            g_panel_width = screen_width - (int)mouse_pos.x;
+            if (g_panel_width < 300) g_panel_width = 300;
+            if (g_panel_width > screen_width - 200) g_panel_width = screen_width - 200;
+            panel_x = screen_width - g_panel_width;
+            if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) panel_dragging = false;
+        }
+        if (over_splitter || panel_dragging) SetMouseCursor(MOUSE_CURSOR_RESIZE_EW);
+        else SetMouseCursor(MOUSE_CURSOR_DEFAULT);
+
+        // Recalculate grid width if the screen, panel width, or tile size changed.
+        // (Panel width and tile size change via UI scale or the panel splitter.)
+        if (abs(screen_width - last_screen_width) > 100 ||
+            g_panel_width != last_panel_width || g_tile_size != last_tile_size) {
+            grid_width = (screen_width - g_panel_width - 20) / g_tile_size;
             if (grid_width < 10) grid_width = 10;
             last_screen_width = screen_width;
-            printf("Grid width changed: %d tiles\n", grid_width);
+            last_panel_width  = g_panel_width;
+            last_tile_size    = g_tile_size;
+            grid_dirty = true;
         }
         // Any size change alters the visible grid region -> rebuild the cache once.
         if (screen_width != last_w_px || screen_height != last_h_px) {
@@ -606,7 +765,7 @@ int main(void) {
         // all that remains on an idle frame.
         if (app_mode == 0 && grid_dirty) {
             cached_unique = sim_count_unique(&sim);
-            int gmax = grid_width * ((screen_height - 10) / TILE_SIZE + 2);
+            int gmax = grid_width * ((screen_height - 10) / g_tile_size + 2);
             BeginTextureMode(grid_rt);
                 ClearBackground(BLANK);
                 draw_grid(&sim, &colorizer, 0, 0, grid_width, gmax);
@@ -616,16 +775,18 @@ int main(void) {
 
         // Drawing
         BeginDrawing();
-        ClearBackground((Color){30, 30, 35, 255});
+        ClearBackground(g_theme.bg);
 
         // Mode toggle button (top center, above the grid area)
-        Rectangle toggle_rect = { (float)(screen_width - PANEL_WIDTH) / 2 - 80, 6, 160, 28 };
+        Rectangle toggle_rect = { (float)(screen_width - g_panel_width) / 2 - 80, 6, 160, 28 };
 
         // Dashboard mode: draw it and skip the single-trajectory view entirely
         if (app_mode == 1) {
-            dashboard_update_draw(&dash, screen_width, screen_height, PANEL_WIDTH);
+            dashboard_update_draw(&dash, screen_width, screen_height, g_panel_width);
             if (GuiButton(toggle_rect, "#185# Single View")) app_mode = 0;
             DrawFPS(screen_width - 90, 6);
+            draw_panel_grip(panel_x, screen_height, over_splitter || panel_dragging);
+            draw_options_ui(screen_width, screen_height, &stained_glass);
             EndDrawing();
             continue;
         }
@@ -640,20 +801,46 @@ int main(void) {
         draw_measure_cluster(&stats_history, &sim, 12, 28);
 
         // Live self-identity panel, bottom-left, sitting just above the mission
-        // control panel. Square, ~30% of the viewport height. Recomputes at ~5 fps.
+        // control panel. Square, resizable via its top-right corner. ~30 fps.
         {
             int mc_h = mc_minimized ? 24 : mc_panel_height;
-            float sg_side = 0.45f * screen_height;
-            Rectangle sg_box = { 12.0f, screen_height - mc_h - sg_side - 12.0f,
-                                 sg_side, sg_side };
-            sg_update_draw(&stained_glass, &sim, sg_box, 1.0 / 30.0);  // ~30 fps target
+            float bottom = screen_height - mc_h - 12.0f;   // fixed bottom edge
+            float max_side = bottom - 40.0f;               // leave a top margin
+            if (sg_side <= 0.0f) sg_side = 0.45f * screen_height;   // first-frame default
+            if (sg_side > max_side) sg_side = max_side;
+
+            // Top-right corner drag handle.
+            float bx = 12.0f, by = bottom - sg_side;
+            Rectangle handle = { bx + sg_side - 16, by, 16, 16 };
+            bool over_handle = CheckCollisionPointRec(mouse_pos, handle);
+            if (over_handle && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) sg_dragging = true;
+            if (sg_dragging) {
+                sg_side = mouse_pos.x - bx;                 // keep square off the x drag
+                if (sg_side < 150.0f) sg_side = 150.0f;
+                if (sg_side > max_side) sg_side = max_side;
+                by = bottom - sg_side;
+                if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) sg_dragging = false;
+                SetMouseCursor(MOUSE_CURSOR_RESIZE_NWSE);
+            } else if (over_handle) {
+                SetMouseCursor(MOUSE_CURSOR_RESIZE_NWSE);
+            }
+
+            Rectangle sg_box = { bx, by, sg_side, sg_side };
+            sg_update_draw(&stained_glass, &sim, sg_box, 1.0 / 30.0,   // ~30 fps target
+                           g_theme.accent, g_theme.panel, g_theme.text_dim);
+
+            // Corner grip.
+            Color grip = (over_handle || sg_dragging) ? g_theme.accent : g_theme.text_dim;
+            for (int i = 0; i < 3; i++)
+                DrawLine((int)(bx + sg_side) - 3 - i * 4, (int)by + 3,
+                         (int)(bx + sg_side) - 3, (int)by + 3 + i * 4, grip);
         }
 
         // Draw panel background
-        DrawRectangle(panel_x, 0, PANEL_WIDTH, screen_height, (Color){25, 25, 30, 255});
+        DrawRectangle(panel_x, 0, g_panel_width, screen_height, g_theme.panel);
 
         // Handle scrolling when mouse is over panel
-        Rectangle panel_rect = {panel_x, 0, PANEL_WIDTH, screen_height};
+        Rectangle panel_rect = {panel_x, 0, g_panel_width, screen_height};
         Vector2 mouse = GetMousePosition();
 
         // Calculate content height (approximate based on controls)
@@ -677,21 +864,21 @@ int main(void) {
         }
 
         // Begin scissor mode for panel clipping
-        BeginScissorMode(panel_x, 0, PANEL_WIDTH, screen_height);
+        BeginScissorMode(panel_x, 0, g_panel_width, screen_height);
 
         // Apply scroll offset to all controls
         int scroll_y = (int)panel_scroll;
 
         // Title (fixed, doesn't scroll)
         EndScissorMode();
-        DrawRectangle(panel_x, 0, PANEL_WIDTH, 65, (Color){25, 25, 30, 255});
-        DrawText("Controls", panel_x + 20, 20, 24, WHITE);
+        DrawRectangle(panel_x, 0, g_panel_width, 65, g_theme.header);
+        DrawTextS("Controls", panel_x + 20, 20, 24, g_theme.text);
 #ifdef __APPLE__
-        DrawText("(Cmd+F fullscreen)", panel_x + 20, 48, 12, GRAY);
+        DrawTextS("(Cmd+F fullscreen)", panel_x + 20, 48, 12, GRAY);
 #else
-        DrawText("(F11 fullscreen)", panel_x + 20, 48, 12, GRAY);
+        DrawTextS("(F11 fullscreen)", panel_x + 20, 48, 12, GRAY);
 #endif
-        BeginScissorMode(panel_x, 65, PANEL_WIDTH, screen_height - 65);
+        BeginScissorMode(panel_x, 65, g_panel_width, screen_height - 65);
 
         // Buttons
         int btn_y = 75 + scroll_y;
@@ -733,19 +920,21 @@ int main(void) {
         btn_y += btn_spacing + 20;
 
         // Sliders
-        DrawText("Parameters", panel_x + 20, btn_y, 20, WHITE);
+        DrawTextS("Parameters", panel_x + 20, btn_y, 20, WHITE);
         btn_y += 30;
 
         int slider_w = 230;  // Leave room for value text on right
         int slider_h = 20;
-        int label_w = 100;
+        // Slider x-offset scales with the UI scale so the (scaled) labels to its
+        // left don't overlap the sliders at larger scales.
+        int label_w = (int)(100 * g_ui_scale + 0.5f);
         int row_h = 35;
         const char *hover_text = NULL;
         Rectangle hover_rect = {0};
 
         // INDEL rate
-        Rectangle indel_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h};
-        DrawText("INDEL rate:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
+        Rectangle indel_row = {panel_x, btn_y - 5, g_panel_width, row_h};
+        DrawTextS("INDEL rate:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
         GuiSlider(
             (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
             NULL, TextFormat("%.2f", sim.params.indel_rate),
@@ -758,8 +947,8 @@ int main(void) {
 
         // Mean indel size (central / geometric-mean event size in repeat units;
         // the dup/del split is set by Dup/del ratio below).
-        Rectangle size_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h};
-        DrawText("Mean size:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
+        Rectangle size_row = {panel_x, btn_y - 5, g_panel_width, row_h};
+        DrawTextS("Mean size:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
         GuiSlider(
             (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
             NULL, TextFormat("%.1f", sim.params.indel_size_lambda),
@@ -775,8 +964,10 @@ int main(void) {
         // that P(dup)*size_dup == P(del)*size_del and the mean array length is held
         // constant: bigger events are made proportionally rarer. The four derived
         // quantities (dup/del size and rate) are shown beneath.
-        Rectangle ratio_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h};
-        DrawText("Dup/del ratio:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
+        Rectangle ratio_row = {panel_x, btn_y - 5, g_panel_width, row_h};
+        // Wrap "ratio" onto a second line so the label doesn't crowd the slider.
+        DrawTextS("Dup/del", panel_x + 20, btn_y - 5, 16, LIGHTGRAY);
+        DrawTextS("ratio:",  panel_x + 20, btn_y - 5 + scaled_font(16), 16, LIGHTGRAY);
         float size_ratio_e = log10f(sim.params.dup_del_size_ratio);
         const char *rfmt = sim.params.dup_del_size_ratio < 1.0f ? "%.3fx"
                          : sim.params.dup_del_size_ratio < 10.0f ? "%.2fx" : "%.0fx";
@@ -796,19 +987,19 @@ int main(void) {
         {
             float r = sim.params.dup_del_size_ratio, sr = sqrtf(r);
             float pdup = 1.0f / (1.0f + r);
-            DrawText(TextFormat("dup ~%.1f u  %.2f/gen", sim.params.indel_size_lambda * sr,
+            DrawTextS(TextFormat("dup ~%.1f u  %.2f/gen", sim.params.indel_size_lambda * sr,
                                 sim.params.indel_rate * pdup),
                      panel_x + label_w + 20, btn_y - 2, 12, (Color){130, 160, 130, 255});
             btn_y += 14;
-            DrawText(TextFormat("del ~%.1f u  %.2f/gen", sim.params.indel_size_lambda / sr,
+            DrawTextS(TextFormat("del ~%.1f u  %.2f/gen", sim.params.indel_size_lambda / sr,
                                 sim.params.indel_rate * (1.0f - pdup)),
                      panel_x + label_w + 20, btn_y - 2, 12, (Color){130, 160, 130, 255});
             btn_y += 18;
         }
 
         // SNP rate
-        Rectangle snp_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h};
-        DrawText("SNP rate:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
+        Rectangle snp_row = {panel_x, btn_y - 5, g_panel_width, row_h};
+        DrawTextS("SNP rate:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
         GuiSlider(
             (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
             NULL, TextFormat("%.2f", sim.params.snp_rate),
@@ -820,8 +1011,8 @@ int main(void) {
         btn_y += row_h;
 
         // Gens per frame
-        Rectangle gpf_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h + 10};
-        DrawText("Gens/frame:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
+        Rectangle gpf_row = {panel_x, btn_y - 5, g_panel_width, row_h + 10};
+        DrawTextS("Gens/frame:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
         GuiSlider(
             (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
             NULL, TextFormat("%d", (int)gens_per_frame),
@@ -833,8 +1024,8 @@ int main(void) {
         btn_y += row_h + 10;
 
         // Target size
-        Rectangle target_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h};
-        DrawText("Target size:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
+        Rectangle target_row = {panel_x, btn_y - 5, g_panel_width, row_h};
+        DrawTextS("Target size:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
         float target_f = (float)sim.params.target_size;
         GuiSlider(
             (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
@@ -848,8 +1039,8 @@ int main(void) {
         btn_y += row_h;
 
         // Elasticity
-        Rectangle elast_row = {panel_x, btn_y - 5, PANEL_WIDTH, row_h + 10};
-        DrawText("Elasticity:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
+        Rectangle elast_row = {panel_x, btn_y - 5, g_panel_width, row_h + 10};
+        DrawTextS("Elasticity:", panel_x + 20, btn_y + 2, 16, LIGHTGRAY);
         GuiSlider(
             (Rectangle){panel_x + label_w + 20, btn_y, slider_w, slider_h},
             NULL, TextFormat("%.2f", sim.params.elasticity),
@@ -914,13 +1105,13 @@ int main(void) {
             if (sim.params.count_dist == DIST_NEGATIVE_BINOMIAL) adv_height += 26;
             if (sim.params.size_dist == SIZE_POWER_LAW) adv_height += 26;
 
-            DrawRectangle(panel_x + 10, btn_y, PANEL_WIDTH - 20, adv_height, (Color){40, 40, 40, 200});
+            DrawRectangle(panel_x + 10, btn_y, g_panel_width - 20, adv_height, (Color){40, 40, 40, 200});
 
             int adv_y = btn_y + 10;
 
             // Step size
             Rectangle step_row = {panel_x + 20, adv_y - 2, 220, 24};
-            DrawText("Step size:", panel_x + 20, adv_y, 16, LIGHTGRAY);
+            DrawTextS("Step size:", panel_x + 20, adv_y, 16, LIGHTGRAY);
             if (GuiTextBox((Rectangle){panel_x + 120, adv_y - 3, 100, 24},
                           step_size_text, 16, step_size_edit)) {
                 step_size_edit = !step_size_edit;
@@ -948,7 +1139,7 @@ int main(void) {
             // Events dropdown row
             int events_y = adv_y;
             Rectangle events_row = {panel_x + 20, events_y, 250, 24};
-            DrawText("Events:", panel_x + 20, events_y + 2, 16, LIGHTGRAY);
+            DrawTextS("Events:", panel_x + 20, events_y + 2, 16, LIGHTGRAY);
             if (CheckCollisionPointRec(mouse, events_row) && !count_dist_edit && !size_dist_edit) {
                 hover_text = "Distribution for mutation event counts per generation";
             }
@@ -958,10 +1149,10 @@ int main(void) {
             int dispersion_y = adv_y;
             if (sim.params.count_dist == DIST_NEGATIVE_BINOMIAL) {
                 Rectangle disp_row = {panel_x + 40, dispersion_y, 300, 20};
-                DrawText("dispersion:", panel_x + 40, dispersion_y + 2, 14, GRAY);
+                DrawTextS("dispersion:", panel_x + 40, dispersion_y + 2, 14, GRAY);
                 GuiSlider((Rectangle){panel_x + 140, dispersion_y, 180, 18}, NULL, NULL,
                           &sim.params.nb_dispersion, 0.1f, 5.0f);
-                DrawText(TextFormat("%.1f", sim.params.nb_dispersion), panel_x + 330, dispersion_y + 2, 12, WHITE);
+                DrawTextS(TextFormat("%.1f", sim.params.nb_dispersion), panel_x + 330, dispersion_y + 2, 12, WHITE);
                 if (CheckCollisionPointRec(mouse, disp_row)) {
                     hover_text = "Overdispersion (k): lower = more variance, higher = more Poisson-like";
                 }
@@ -971,7 +1162,7 @@ int main(void) {
             // Sizes dropdown row
             int sizes_y = adv_y;
             Rectangle sizes_row = {panel_x + 20, sizes_y, 250, 24};
-            DrawText("Sizes:", panel_x + 20, sizes_y + 2, 16, LIGHTGRAY);
+            DrawTextS("Sizes:", panel_x + 20, sizes_y + 2, 16, LIGHTGRAY);
             if (CheckCollisionPointRec(mouse, sizes_row) && !count_dist_edit && !size_dist_edit) {
                 hover_text = "Distribution for mutation sizes (dup/del length)";
             }
@@ -980,10 +1171,10 @@ int main(void) {
             // Alpha slider row (only if power law selected)
             if (sim.params.size_dist == SIZE_POWER_LAW) {
                 Rectangle alpha_row = {panel_x + 40, adv_y, 300, 20};
-                DrawText("alpha:", panel_x + 40, adv_y + 2, 14, GRAY);
+                DrawTextS("alpha:", panel_x + 40, adv_y + 2, 14, GRAY);
                 GuiSlider((Rectangle){panel_x + 140, adv_y, 180, 18}, NULL, NULL,
                           &sim.params.power_law_alpha, 1.5f, 4.0f);
-                DrawText(TextFormat("%.1f", sim.params.power_law_alpha), panel_x + 330, adv_y + 2, 12, WHITE);
+                DrawTextS(TextFormat("%.1f", sim.params.power_law_alpha), panel_x + 330, adv_y + 2, 12, WHITE);
                 if (CheckCollisionPointRec(mouse, alpha_row)) {
                     hover_text = "Tail heaviness: lower = heavier tail (more large events)";
                 }
@@ -1039,19 +1230,19 @@ int main(void) {
 
         // Draw hover tooltip
         if (hover_text) {
-            int text_width = MeasureText(hover_text, 14);
+            int text_width = MeasureTextS(hover_text, 14);
             int tip_x = (int)mouse.x + 15;
             int tip_y = (int)mouse.y - 25;
             if (tip_x + text_width + 10 > screen_width) tip_x = screen_width - text_width - 15;
             if (tip_y < 5) tip_y = (int)mouse.y + 20;
             DrawRectangle(tip_x - 5, tip_y - 3, text_width + 10, 20, (Color){50, 50, 55, 240});
             DrawRectangleLines(tip_x - 5, tip_y - 3, text_width + 10, 20, GRAY);
-            DrawText(hover_text, tip_x, tip_y, 14, WHITE);
+            DrawTextS(hover_text, tip_x, tip_y, 14, WHITE);
         }
 
         // Statistics panel
         int mc_height = mc_minimized ? 24 : mc_panel_height;
-        draw_mission_control(&stats_history, screen_width, screen_height, mc_height, mc_minimized, PANEL_WIDTH);
+        draw_mission_control(&stats_history, screen_width, screen_height, mc_height, mc_minimized, g_panel_width);
 
         // Minimize/maximize toggle button (far left)
         int mc_btn_x = 10;
@@ -1064,6 +1255,8 @@ int main(void) {
         // Mode toggle to enter the multi-trajectory dashboard (drawn on top)
         if (GuiButton(toggle_rect, "#191# Dashboard")) app_mode = 1;
 
+        draw_panel_grip(panel_x, screen_height, over_splitter || panel_dragging);
+        draw_options_ui(screen_width, screen_height, &stained_glass);
         EndDrawing();
     }
 

@@ -56,14 +56,20 @@ typedef struct {
     int      *bin;            // SG_MAX_UNITS
     float     ema_lo, ema_hi; // smoothed colour range (persists across refreshes)
     bool      ema_init;
+    int       palette;        // colormap id (see SG_PAL_* below)
 } StainedGlass;
+
+enum { SG_PAL_TURBO = 0, SG_PAL_VIRIDIS, SG_PAL_MAGMA, SG_PAL_ICE, SG_PAL_MONO, SG_PAL_COUNT };
 
 void sg_init(StainedGlass *sg);
 void sg_free(StainedGlass *sg);
+void sg_set_palette(StainedGlass *sg, int palette);
 
 // Upload any finished result, then (if at least interval_s has elapsed and the
 // array changed) snapshot the current array and kick a background recompute.
 // Finally draw the panel into `box`. Call every frame from the main thread.
-void sg_update_draw(StainedGlass *sg, const Simulation *sim, Rectangle box, double interval_s);
+// `frame`, `bg` and `label` colour the box chrome so it follows the active theme.
+void sg_update_draw(StainedGlass *sg, const Simulation *sim, Rectangle box, double interval_s,
+                    Color frame, Color bg, Color label);
 
 #endif // STAINED_GLASS_H

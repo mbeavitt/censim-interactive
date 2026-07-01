@@ -773,21 +773,47 @@ static int import_histograms(Dashboard *d, const char *path) {
 }
 
 // A labelled slider row; returns the (possibly updated) value via the pointer.
+// UI text scaling, shared with main.c's Options dialog. df() scales pixel
+// offsets smoothly. df_font() scales font sizes but snaps to an integer multiple
+// of the 10px default-font base -- the bitmap font is only crisp at 10/20/30...,
+// so fractional sizes (e.g. 15px) point-upscale and look rough. It never shrinks
+// below the authored size.
+extern float g_ui_scale;
+static int  df(int v) { int s = (int)(v * g_ui_scale + 0.5f); return s < 1 ? 1 : s; }
+static int  df_font(int base) {
+    int want = (int)(base * g_ui_scale + 0.5f);
+    if (want < base) want = base;
+    int snapped = ((want + 5) / 10) * 10;      // nearest multiple of 10
+    if (snapped < base) snapped = base;        // don't shrink below the design size
+    return snapped;
+}
+static void DrawTextS(const char *t, int x, int y, int sz, Color c) { DrawText(t, x, y, df_font(sz), c); }
+
+// Lay out a slider so its right edge stays fixed as the (scaled) label grows:
+// push the slider start right by df(130) and shrink its width to match.
+static void slider_geom(float panel_x, float w, float *sx, float *sw) {
+    *sx = panel_x + df(130);
+    *sw = w + 130 - df(130);
+    if (*sw < 40) *sw = 40;
+}
+
 static void slider_row(float panel_x, float y, float w, const char *label,
                        const char *valtext, float *v, float lo, float hi) {
-    DrawText(label, (int)panel_x + 12, (int)y + 2, 14, LIGHTGRAY);
-    GuiSlider((Rectangle){panel_x + 130, y, w, 18}, NULL, valtext, v, lo, hi);
+    DrawTextS(label, (int)panel_x + 12, (int)y + 2, 14, LIGHTGRAY);
+    float sx, sw; slider_geom(panel_x, w, &sx, &sw);
+    GuiSlider((Rectangle){sx, y, sw, 18}, NULL, valtext, v, lo, hi);
 }
 
 static void slider_sweep_row(float panel_x, float y, float w, const char *label,
                              const char *valtext, float *v, float lo, float hi, bool *sweep) {
     if (sweep) {
         GuiCheckBox((Rectangle){panel_x + 6, y + 2, 14, 14}, "", sweep);
-        DrawText(label, (int)panel_x + 26, (int)y + 2, 14, LIGHTGRAY);
+        DrawTextS(label, (int)panel_x + 26, (int)y + 2, 14, LIGHTGRAY);
     } else {
-        DrawText(label, (int)panel_x + 12, (int)y + 2, 14, LIGHTGRAY);
+        DrawTextS(label, (int)panel_x + 12, (int)y + 2, 14, LIGHTGRAY);
     }
-    GuiSlider((Rectangle){panel_x + 130, y, w, 18}, NULL, valtext, v, lo, hi);
+    float sx, sw; slider_geom(panel_x, w, &sx, &sw);
+    GuiSlider((Rectangle){sx, y, sw, 18}, NULL, valtext, v, lo, hi);
 }
 
 #include <sys/stat.h>
@@ -889,6 +915,32 @@ static void sweep_log_and_advance(Dashboard *d, const HistSnap *su, const HistSn
     }
 }
 
+// Load a sweep run's input parameters (1-based) from summary.csv so the
+// browse-mode title reflects that run's actual inputs. Columns:
+//   run,indel_rate,snp_rate,indel_size,size_ratio,collapse,elasticity,...
+static void load_run_params(Dashboard *d, int run) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/summary.csv", d->sweep_dir);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[1024];
+    while (fgets(line, sizeof(line), f)) {
+        int r; float ir, sr, is, ratio, coll, elast;
+        if (sscanf(line, "%d,%f,%f,%f,%f,%f,%f", &r, &ir, &sr, &is, &ratio, &coll, &elast) == 7
+            && r == run) {
+            d->f_indel_rate = ir;
+            d->f_snp_rate   = sr;
+            d->f_indel_size = is;
+            d->f_size_ratio = ratio;
+            d->f_collapse   = coll;
+            d->f_elasticity = elast;
+            d->elastic      = (elast > 0.0f);
+            break;
+        }
+    }
+    fclose(f);
+}
+
 void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w) {
     int panel_x = screen_w - panel_w;
     int plot_area_w = panel_x - 20;
@@ -966,17 +1018,23 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     // ----- status bar -----
     DrawRectangle(0, top - 2, plot_area_w + 4, 2, GRID);
     
-    if (d->sweep_running) {
-        char params[256] = {0};
-        int pos = snprintf(params, sizeof(params), "Testing:");
-        if (d->sweep_enabled[0]) pos += snprintf(params+pos, sizeof(params)-pos, " INDEL rate=%.2f", d->f_indel_rate);
-        if (d->sweep_enabled[1]) pos += snprintf(params+pos, sizeof(params)-pos, " SNP rate=%.2f", d->f_snp_rate);
-        if (d->sweep_enabled[2]) pos += snprintf(params+pos, sizeof(params)-pos, " INDEL size=%.1f", d->f_indel_size);
-        if (d->sweep_enabled[3]) pos += snprintf(params+pos, sizeof(params)-pos, " Dup/del ratio=%.2fx", d->f_size_ratio);
-        if (d->sweep_enabled[4]) pos += snprintf(params+pos, sizeof(params)-pos, " Collapse=%.0f", d->f_collapse);
-        if (d->sweep_enabled[5]) pos += snprintf(params+pos, sizeof(params)-pos, " Elasticity=%.2f", d->f_elasticity);
-        DrawText(params, 8, 8, 14, (Color){150, 200, 255, 255});
-    }
+    // ----- title: current mode + input parameters (always visible) -----
+    const char *mode = d->sweep_running  ? "SWEEP"
+                     : d->sweep_browsing ? "BROWSING"
+                     : d->has_batch      ? "LIVE"
+                     :                     "READY";
+    char title[360];
+    snprintf(title, sizeof(title),
+             "%s%s   |   INDEL rate %.2f  size %.1f   SNP %.2f   dup:del %.2fx   "
+             "gens %.0f   init %.0f   collapse %.0f   elastic %s",
+             mode,
+             d->sweep_browsing ? TextFormat(" run %d", d->browse_run_idx + 1) : "",
+             d->f_indel_rate, d->f_indel_size, d->f_snp_rate, d->f_size_ratio,
+             d->f_target_gens, d->f_initial, d->f_collapse,
+             d->elastic ? TextFormat("%.2f", d->f_elasticity) : "off");
+    int tw = MeasureText(title, 14);
+    int tx = (plot_area_w - tw) / 2; if (tx < 8) tx = 8;
+    DrawText(title, tx, 40, 14, (Color){150, 200, 255, 255});   // centred, under the progress bar
 
     char status[256];
     if (d->sweep_running) {
@@ -995,8 +1053,8 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     } else {
         snprintf(status, sizeof(status), "Configure a batch and press Run >>");
     }
-    DrawText(status, 8, 40, 14, running ? (Color){0,230,120,255}
-                                        : stopping ? (Color){255,180,0,255} : LIGHTGRAY);
+    DrawText(status, 8, 8, 14, running ? (Color){0,230,120,255}
+                                       : stopping ? (Color){255,180,0,255} : LIGHTGRAY);
 
     // progress bar
     if (d->has_batch && total > 0) {
@@ -1050,12 +1108,14 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
             char path[512];
             snprintf(path, sizeof(path), "%s/histograms/run_%04d.csv", d->sweep_dir, d->browse_run_idx + 1);
             if (!import_histograms(d, path)) d->browse_run_idx++;
+            else load_run_params(d, d->browse_run_idx + 1);
         }
-        if (GuiButton((Rectangle){panel_x + 16 + (panel_w - 28)/2, y + 40, (panel_w - 28)/2, 28}, "Next #119#")) {
+        if (GuiButton((Rectangle){panel_x + 16 + (panel_w - 28)/2, y + 40, (panel_w - 28)/2, 28}, "#119# Next")) {
             d->browse_run_idx++;
             char path[512];
             snprintf(path, sizeof(path), "%s/histograms/run_%04d.csv", d->sweep_dir, d->browse_run_idx + 1);
             if (!import_histograms(d, path)) d->browse_run_idx--;
+            else load_run_params(d, d->browse_run_idx + 1);
         }
     } else {
         if (sweep_selected) {
@@ -1094,6 +1154,7 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
                 char path[512];
                 snprintf(path, sizeof(path), "%s/histograms/run_%04d.csv", d->sweep_dir, d->browse_run_idx + 1);
                 import_histograms(d, path);
+                load_run_params(d, d->browse_run_idx + 1);
             }
             pclose(p);
         }
@@ -1147,21 +1208,21 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     y += 6;
 
     // legend
-    DrawText("overlays:", panel_x + 12, (int)y, 11, GRAY); y += 16;
+    DrawTextS("overlays:", panel_x + 12, (int)y, 11, GRAY); y += df(16);
     DrawRectangle(panel_x + 12, (int)y + 2, 12, 8, REAL);
     if (d->ref.loaded)
-        DrawText(TextFormat("real (n=%d arrays)", d->ref.narrays), panel_x + 30, (int)y, 11, LIGHTGRAY);
+        DrawTextS(TextFormat("real (n=%d arrays)", d->ref.narrays), panel_x + 30, (int)y, 11, LIGHTGRAY);
     else
-        DrawText("real data (no reference.dat)", panel_x + 30, (int)y, 11, (Color){150,120,60,255});
-    y += 16;
-    DrawRectangle(panel_x + 12, (int)y + 2, 12, 8, MED);  DrawText("live median of data", panel_x + 30, (int)y, 11, LIGHTGRAY); y += 16;
+        DrawTextS("real data (no reference.dat)", panel_x + 30, (int)y, 11, (Color){150,120,60,255});
+    y += df(16);
+    DrawRectangle(panel_x + 12, (int)y + 2, 12, 8, MED);  DrawTextS("live median of data", panel_x + 30, (int)y, 11, LIGHTGRAY); y += df(16);
 
     y += 10;
-    DrawText("Fit Parameters", panel_x + 12, (int)y, 14, GRAY); y += 22;
+    DrawTextS("Fit Parameters", panel_x + 12, (int)y, 14, GRAY); y += df(22);
     for (int i = 0; i < 6; i++) {
         if (d->fit_text[i][0] != '\0') {
-            DrawText(plots[i].title, panel_x + 14, (int)y, 11, LIGHTGRAY); y += 14;
-            DrawText(d->fit_text[i], panel_x + 14, (int)y, 10, (Color){90, 120, 90, 255}); y += 16;
+            DrawTextS(plots[i].title, panel_x + 14, (int)y, 11, LIGHTGRAY); y += df(14);
+            DrawTextS(d->fit_text[i], panel_x + 14, (int)y, 10, (Color){90, 120, 90, 255}); y += df(16);
         }
     }
 

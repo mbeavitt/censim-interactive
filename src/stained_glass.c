@@ -42,15 +42,43 @@ static void sketch_unit(const char *seq, const uint32_t *seeds, uint32_t *s) {
     }
 }
 
-// Low identity -> cool, high -> warm (blue->cyan->green->yellow->red).
-static Color sg_colormap(float t) {
+// Linear interpolation between a small set of colour stops.
+static Color ramp(float t, const float stops[][3], int n) {
     if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
-    float r, g, b;
-    if (t < 0.25f)      { float u = t / 0.25f;            r = 0; g = u;     b = 1; }
-    else if (t < 0.50f) { float u = (t - 0.25f) / 0.25f;  r = 0; g = 1;     b = 1 - u; }
-    else if (t < 0.75f) { float u = (t - 0.50f) / 0.25f;  r = u; g = 1;     b = 0; }
-    else                { float u = (t - 0.75f) / 0.25f;  r = 1; g = 1 - u; b = 0; }
+    float x = t * (n - 1);
+    int i = (int)x; if (i >= n - 1) i = n - 2;
+    float u = x - i;
+    float r = stops[i][0] + u * (stops[i + 1][0] - stops[i][0]);
+    float g = stops[i][1] + u * (stops[i + 1][1] - stops[i][1]);
+    float b = stops[i][2] + u * (stops[i + 1][2] - stops[i][2]);
     return (Color){ (unsigned char)(r * 255), (unsigned char)(g * 255), (unsigned char)(b * 255), 255 };
+}
+
+// Low identity -> cool, high -> warm. Palette selected per StainedGlass.palette.
+static Color sg_colormap(float t, int palette) {
+    switch (palette) {
+        case SG_PAL_VIRIDIS: {
+            static const float s[][3] = {{0.27f,0.00f,0.33f},{0.23f,0.32f,0.55f},{0.13f,0.57f,0.55f},{0.37f,0.79f,0.38f},{0.99f,0.91f,0.15f}};
+            return ramp(t, s, 5);
+        }
+        case SG_PAL_MAGMA: {
+            static const float s[][3] = {{0.00f,0.00f,0.01f},{0.28f,0.06f,0.42f},{0.68f,0.21f,0.44f},{0.98f,0.53f,0.38f},{0.99f,0.99f,0.75f}};
+            return ramp(t, s, 5);
+        }
+        case SG_PAL_ICE: {
+            static const float s[][3] = {{0.01f,0.02f,0.09f},{0.05f,0.24f,0.53f},{0.22f,0.55f,0.80f},{0.55f,0.82f,0.92f},{0.95f,0.99f,1.00f}};
+            return ramp(t, s, 5);
+        }
+        case SG_PAL_MONO: {
+            static const float s[][3] = {{0.03f,0.03f,0.04f},{0.5f,0.5f,0.52f},{1.0f,1.0f,1.0f}};
+            return ramp(t, s, 3);
+        }
+        case SG_PAL_TURBO:
+        default: {
+            static const float s[][3] = {{0.0f,0.0f,1.0f},{0.0f,1.0f,1.0f},{0.0f,1.0f,0.0f},{1.0f,1.0f,0.0f},{1.0f,0.0f,0.0f}};
+            return ramp(t, s, 5);
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -122,7 +150,7 @@ static void sg_compute_core(StainedGlass *sg, int n) {
         for (int px = 0; px < SG_DIM; px++) {
             int mx = (dim == SG_DIM) ? px : (int)((long long)px * dim / SG_DIM);
             float v = sg->avg[(size_t)my * dim + mx];
-            sg->back[(size_t)py * SG_DIM + px] = sg_colormap((v - lo) * inv);
+            sg->back[(size_t)py * SG_DIM + px] = sg_colormap((v - lo) * inv, sg->palette);
         }
     }
     sg->res_lo = lo;
@@ -175,6 +203,12 @@ void sg_init(StainedGlass *sg) {
     pthread_create(&sg->thread, NULL, sg_worker, sg);
 }
 
+void sg_set_palette(StainedGlass *sg, int palette) {
+    if (palette < 0) palette = 0;
+    if (palette >= SG_PAL_COUNT) palette = SG_PAL_COUNT - 1;
+    sg->palette = palette;   // benign int write; picked up on the next recompute
+}
+
 void sg_free(StainedGlass *sg) {
     pthread_mutex_lock(&sg->mtx);
     sg->quit = true;
@@ -189,7 +223,8 @@ void sg_free(StainedGlass *sg) {
     memset(sg, 0, sizeof(*sg));
 }
 
-void sg_update_draw(StainedGlass *sg, const Simulation *sim, Rectangle box, double interval_s) {
+void sg_update_draw(StainedGlass *sg, const Simulation *sim, Rectangle box, double interval_s,
+                    Color frame, Color bg, Color label) {
     double now = GetTime();
 
     pthread_mutex_lock(&sg->mtx);
@@ -230,15 +265,16 @@ void sg_update_draw(StainedGlass *sg, const Simulation *sim, Rectangle box, doub
     }
     pthread_mutex_unlock(&sg->mtx);
 
-    // 3) Draw (main-owned texture + last uploaded range).
-    DrawRectangleRec(box, (Color){ 18, 18, 22, 235 });
+    // 3) Draw (main-owned texture + last uploaded range), chrome in theme colours.
+    DrawRectangleRec(box, (Color){ bg.r, bg.g, bg.b, 235 });
     DrawTexturePro(sg->tex, (Rectangle){ 0, 0, SG_DIM, SG_DIM }, box,
                    (Vector2){ 0, 0 }, 0.0f, WHITE);
-    DrawRectangleLinesEx(box, 1.0f, (Color){ 0, 180, 0, 200 });
+    DrawRectangleLinesEx(box, 1.0f, (Color){ frame.r, frame.g, frame.b, 200 });
 
-    DrawText("SELF-IDENTITY", (int)box.x + 6, (int)box.y + 5, 14, (Color){ 0, 200, 0, 220 });
+    DrawText("SELF-IDENTITY", (int)box.x + 6, (int)box.y + 5, 14,
+             (Color){ frame.r, frame.g, frame.b, 230 });
     const char *sub = TextFormat("%d units  id %.2f-%.2f",
                                  sim->array.num_units, sg->lo, sg->hi);
     DrawText(sub, (int)box.x + 6, (int)(box.y + box.height) - 18, 12,
-             (Color){ 200, 200, 210, 220 });
+             (Color){ label.r, label.g, label.b, 220 });
 }
