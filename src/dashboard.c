@@ -189,46 +189,151 @@ static float edge_at(const Histogram *h, int i) {
     return h->min + (h->max - h->min) * i / h->nbins;
 }
 
-// Overlay the real-data distribution as a density curve (red line) over the plot,
-// normalised to its own peak, using the same x-window and y scale as the sim bars.
-static void draw_ref_curve(const Histogram *ref, float px, float py, float pw, float ph,
-                           float lo_v, float hi_v, int log_x, bool log_y) {
-    if (!ref || ref->total == 0) return;
-    float dmax = 0.0f, dmin = 0.0f; int seen = 0;
+// Overlay the ghost distribution: faded transparent bars and/or a fitted curve
+// (same fit_type/order as the batch), self-normalised to its own peak over the
+// same x-window as the sim. Draws behind the sim bars for a ghost-histogram look.
+static float g_gdens[DASH_MAXBINS];  // single-threaded UI: reused each frame
+static void draw_ghost_overlay(const Histogram *ref, float px, float py, float pw, float ph,
+                               float lo_v, float hi_v, int log_x, bool log_y, int bars,
+                               int fit_type, int poly_order, bool do_bars, bool do_fit,
+                               float bar_alpha) {
+    if (!ref || ref->total == 0 || bars < 1) return;
+    if (bars > DASH_MAXBINS) bars = DASH_MAXBINS;
+
+    // Value edge of display bar j (0..bars) within the window.
+    #define GVAT(fr) (log_x ? powf(10.0f, log10f(lo_v) + (log10f(hi_v) - log10f(lo_v)) * (fr)) \
+                            : lo_v + (hi_v - lo_v) * (fr))
+
+    // Aggregate the ref histogram's fine bins into the display bars (by value),
+    // as a density (count per linear x-width), matching the sim's bars.
+    for (int j = 0; j < bars; j++) g_gdens[j] = 0.0f;
     for (int i = 0; i < ref->nbins; i++) {
         if (ref->counts[i] == 0) continue;
-        float w = log_x ? (edge_at(ref, i + 1) - edge_at(ref, i)) : 1.0f;
-        float d = (float)ref->counts[i] / w;
-        if (!seen || d > dmax) dmax = d;
-        if (!seen || d < dmin) dmin = d;
-        seen = 1;
+        float c = log_x ? sqrtf(edge_at(ref, i) * edge_at(ref, i + 1))
+                        : 0.5f * (edge_at(ref, i) + edge_at(ref, i + 1));
+        float f = val_frac(c, lo_v, hi_v, log_x);
+        if (f < 0.0f || f >= 1.0f) continue;
+        int j = (int)(f * bars); if (j >= bars) j = bars - 1;
+        g_gdens[j] += (float)ref->counts[i];
+    }
+    float dmax = 0.0f, dmin = 0.0f; int seen = 0;
+    for (int j = 0; j < bars; j++) {
+        float vlo = GVAT((float)j / bars), vhi = GVAT((float)(j + 1) / bars);
+        float w = vhi - vlo; if (w <= 0.0f) w = 1.0f;
+        g_gdens[j] /= w;
+        if (g_gdens[j] > 0.0f) { if (!seen || g_gdens[j] > dmax) dmax = g_gdens[j];
+                                 if (!seen || g_gdens[j] < dmin) dmin = g_gdens[j]; seen = 1; }
     }
     if (dmax <= 0.0f) return;
     if (dmin <= 0.0f) dmin = dmax;
     float lmn = log10f(dmin), lmx = log10f(dmax);
     if (lmx - lmn < 1e-6f) lmn = lmx - 1.0f;
 
-    int have = 0; float x0 = 0, y0 = 0;
-    for (int i = 0; i < ref->nbins; i++) {
-        float c = log_x ? sqrtf(edge_at(ref, i) * edge_at(ref, i + 1))
-                        : 0.5f * (edge_at(ref, i) + edge_at(ref, i + 1));
-        float f = val_frac(c, lo_v, hi_v, log_x);
-        if (f < 0.0f || f > 1.0f) { have = 0; continue; }  // outside window: break line
-        float w = log_x ? (edge_at(ref, i + 1) - edge_at(ref, i)) : 1.0f;
-        float d = (float)ref->counts[i] / w;
-        float h01 = (d <= 0.0f) ? 0.0f
-                  : (log_y ? (log10f(d) - lmn) / (lmx - lmn) : d / dmax);
-        if (h01 < 0.0f) h01 = 0.0f; else if (h01 > 1.0f) h01 = 1.0f;
-        float X = px + f * pw, Y = py + ph * (1.0f - h01);
-        if (have) DrawLineEx((Vector2){x0, y0}, (Vector2){X, Y}, 2.0f, REAL);
-        x0 = X; y0 = Y; have = 1;
+    #define GH01(d) (log_y ? (log10f(d) - lmn) / (lmx - lmn) : (d) / dmax)
+
+    // Faded bars.
+    if (do_bars) {
+        int a = (int)(bar_alpha * 255.0f + 0.5f); if (a < 0) a = 0; else if (a > 255) a = 255;
+        Color fill = (Color){ REAL.r, REAL.g, REAL.b, (unsigned char)a };
+        for (int j = 0; j < bars; j++) {
+            if (g_gdens[j] <= 0.0f) continue;
+            float h01 = GH01(g_gdens[j]); if (h01 < 0) h01 = 0; else if (h01 > 1) h01 = 1;
+            float hh = ph * h01; if (log_y && hh < 1.0f) hh = 1.0f;
+            int xL = (int)(px + pw * (float)j / bars);
+            int xR = (int)(px + pw * (float)(j + 1) / bars);
+            int w = xR - xL - 1; if (w < 1) w = 1;
+            DrawRectangle(xL, (int)(py + ph - hh), w, (int)hh, fill);
+        }
     }
+    if (!do_fit) { return; }
+
+    // ---- fit the ghost bars, same fit_type/order as the batch ----
+    if (fit_type == 1 || fit_type == 3) {          // Chebyshev / power law (log-density)
+        int n_coeffs = ((fit_type == 1) ? poly_order : 1) + 1;
+        if (n_coeffs > 10) n_coeffs = 10;
+        double M[100] = {0}, rhs[10] = {0}; int nfit = 0;
+        double umin = log(lo_v > 0 ? lo_v : 1e-6), umax = log(hi_v > 0 ? hi_v : 1e-6);
+        double fu_lo = 1e300, fu_hi = -1e300;
+        for (int j = 0; j < bars; j++) {
+            if (g_gdens[j] <= 0.0f) continue;
+            float vlo = GVAT((float)j / bars), vhi = GVAT((float)(j + 1) / bars);
+            double xc = log_x ? sqrt((double)vlo * vhi) : 0.5 * (vlo + vhi);
+            if (xc <= 0) continue;
+            double u = log(xc), y = log((double)g_gdens[j]);
+            if (u < fu_lo) fu_lo = u; if (u > fu_hi) fu_hi = u;
+            double z = (umax > umin) ? 2.0 * (u - umin) / (umax - umin) - 1.0 : 0.0;
+            double T[10]; T[0] = 1; T[1] = z;
+            for (int k = 2; k < n_coeffs; k++) T[k] = 2.0 * z * T[k-1] - T[k-2];
+            for (int r = 0; r < n_coeffs; r++) {
+                for (int cc = 0; cc < n_coeffs; cc++) M[r*n_coeffs+cc] += T[r]*T[cc];
+                rhs[r] += T[r] * y;
+            }
+            nfit++;
+        }
+        double cf[10];
+        if (nfit >= n_coeffs && solve_sys(M, rhs, cf, n_coeffs)) {
+            double pad = (nfit > 1) ? (fu_hi - fu_lo) / (double)(nfit - 1) : 0.0;
+            double dlo = fu_lo - pad, dhi = fu_hi + pad;
+            int hv = 0; float xprev = 0, yprev = 0;
+            for (int k = 0; k <= 64; k++) {
+                float fr = (float)k / 64.0f;
+                float xv = GVAT(fr);
+                if (xv <= 0) continue;
+                double u = log(xv);
+                if (u < dlo || u > dhi) { hv = 0; continue; }
+                double z = (umax > umin) ? 2.0 * (u - umin) / (umax - umin) - 1.0 : 0.0;
+                double T[10]; T[0] = 1; T[1] = z;
+                for (int i = 2; i < n_coeffs; i++) T[i] = 2.0 * z * T[i-1] - T[i-2];
+                double ld = 0; for (int i = 0; i < n_coeffs; i++) ld += cf[i]*T[i];
+                double dd = exp(ld); if (!(dd > 0)) { hv = 0; continue; }
+                float h01 = GH01((float)dd); if (h01 < 0) h01 = 0; else if (h01 > 1) h01 = 1;
+                float X = px + fr * pw, Y = py + ph * (1.0f - h01);
+                if (hv) DrawLineEx((Vector2){xprev, yprev}, (Vector2){X, Y}, 2.0f, REAL);
+                xprev = X; yprev = Y; hv = 1;
+            }
+        }
+    } else if (fit_type == 2 || fit_type == 4) {   // normal / gamma (from fine bins)
+        double sx = 0, sx2 = 0; long tot = 0;
+        for (int i = 0; i < ref->nbins; i++) {
+            if (ref->counts[i] <= 0) continue;
+            double x = log_x ? sqrt((double)edge_at(ref, i) * edge_at(ref, i + 1))
+                             : 0.5 * (edge_at(ref, i) + edge_at(ref, i + 1));
+            sx += x * ref->counts[i]; sx2 += x * x * ref->counts[i]; tot += ref->counts[i];
+        }
+        if (tot > 1) {
+            double mu = sx / tot, var = (sx2 - sx*sx/tot) / (tot - 1);
+            double sd = var > 0 ? sqrt(var) : 0;
+            if (sd > 0 && mu > 0) {
+                double k_sh = (mu*mu)/(sd*sd), th = (sd*sd)/mu;   // gamma params
+                #define GPDF(xv) (fit_type==2 \
+                    ? exp(-0.5*(((xv)-mu)/sd)*(((xv)-mu)/sd)) / (sd*sqrt(2*M_PI)) \
+                    : ((xv)>0 && k_sh>0 ? pow((xv),k_sh-1)*exp(-(xv)/th)/(pow(th,k_sh)*tgamma(k_sh)) : 0))
+                double pmax = 0;                       // scale the pdf peak to the ghost peak
+                for (int kk = 0; kk <= 64; kk++) { double p = GPDF(GVAT((float)kk/64.0f)); if (p > pmax) pmax = p; }
+                if (pmax > 0) {
+                    int hv = 0; float xp = 0, yp = 0;
+                    for (int kk = 0; kk <= 64; kk++) {
+                        float fr = (float)kk/64.0f; float xv = GVAT(fr);
+                        double dd = GPDF(xv) / pmax * dmax;
+                        if (!(dd > 0)) { hv = 0; continue; }
+                        float h01 = GH01((float)dd); if (h01<0) h01=0; else if (h01>1) h01=1;
+                        float X = px + fr*pw, Y = py + ph*(1.0f - h01);
+                        if (hv) DrawLineEx((Vector2){xp,yp},(Vector2){X,Y},2.0f, REAL);
+                        xp = X; yp = Y; hv = 1;
+                    }
+                }
+                #undef GPDF
+            }
+        }
+    }
+    #undef GVAT
+    #undef GH01
 }
 
 static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                       bool log_y, bool autoscale, const Histogram *ref,
                       int target_bars, Color accent, int fit_type, int poly_order,
-                      char *out_fit_text) {
+                      bool ghost_bars, bool ghost_fit, float ghost_alpha, char *out_fit_text) {
     if (out_fit_text) out_fit_text[0] = '\0';
     Color axc = shade(accent, 0.55f);  // dimmed accent for border + axis text
     DrawRectangleRec(b, BG);
@@ -407,7 +512,8 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     DrawText(xs, (int)(px + pw - MeasureText(xs, 9)), (int)py - 2, 9, shade(accent, 0.3f));
 
     // real-data distribution overlay (red density curve)
-    draw_ref_curve(ref, px, py, pw, ph, lo_v, hi_v, s->log_scale, log_y);
+    draw_ghost_overlay(ref, px, py, pw, ph, lo_v, hi_v, s->log_scale, log_y, bars,
+                       fit_type, poly_order, ghost_bars, ghost_fit, ghost_alpha);
 
     // Polynomial overlays (Chebyshev or Power law)
     if ((fit_type == 1 || fit_type == 3) && nfit >= n_coeffs) {
@@ -587,6 +693,9 @@ void dashboard_init(Dashboard *d) {
     // executable. Absent is fine -- the overlay just won't draw.
     reference_init(&d->ref);
     d->show_ref = true;
+    d->ghost_bars = true;   // faded histogram bars
+    d->ghost_fit = true;    // fitted curve, same fit as the batch
+    d->ghost_alpha = 0.28f; // ghost bar opacity
     const char *env = getenv("CENSIM_REFERENCE");
     if (!(env && reference_load(&d->ref, env)) && !reference_load(&d->ref, "reference.dat")) {
         char path[1024];
@@ -954,6 +1063,75 @@ static void load_run_params(Dashboard *d, int run) {
     fclose(f);
 }
 
+// Open a native chooser (zenity on Linux, osascript on macOS) for a file or a
+// directory, returning the selected path. Returns 1 on success / 0 if cancelled.
+static int pick_path(const char *title, int directory, char *out, size_t n) {
+    char cmd[512];
+#ifdef __APPLE__
+    snprintf(cmd, sizeof(cmd),
+        "osascript -e 'POSIX path of (choose %s with prompt \"%s\")' 2>/dev/null",
+        directory ? "folder" : "file", title);
+#else
+    snprintf(cmd, sizeof(cmd),
+        "zenity --file-selection %s --title=\"%s\" 2>/dev/null",
+        directory ? "--directory" : "", title);
+#endif
+    FILE *p = popen(cmd, "r");
+    if (!p) return 0;
+    int ok = 0;
+    if (fgets(out, (int)n, p)) {
+        out[strcspn(out, "\n")] = 0;
+        if (out[0]) ok = 1;
+    }
+    pclose(p);
+    return ok;
+}
+
+// Set the ghost overlay from a run/sweep histogram CSV and label it by filename.
+static void set_ghost_from_file(Dashboard *d, const char *path) {
+    if (reference_load_run(&d->ref, path)) {
+        const char *base = strrchr(path, '/');
+        snprintf(d->ghost_name, sizeof(d->ghost_name), "%s", base ? base + 1 : path);
+        d->show_ref = true;
+    }
+}
+
+// Count run_*.csv files in a sweep directory (for the browse scrubber).
+static int count_runs(const char *dir) {
+    char cmd[600];
+    snprintf(cmd, sizeof(cmd), "ls \"%s\"/histograms/run_*.csv 2>/dev/null | wc -l", dir);
+    FILE *p = popen(cmd, "r");
+    int n = 0;
+    if (p) { if (fscanf(p, "%d", &n) != 1) n = 0; pclose(p); }
+    return n;
+}
+
+// Load browse run `idx` (0-based, clamped to the sweep), syncing slider + params.
+static void browse_load(Dashboard *d, int idx) {
+    if (idx < 0) idx = 0;
+    if (d->browse_run_count > 0 && idx >= d->browse_run_count) idx = d->browse_run_count - 1;
+    char path[512];
+    snprintf(path, sizeof(path), "%s/histograms/run_%04d.csv", d->sweep_dir, idx + 1);
+    if (import_histograms(d, path)) {
+        d->browse_run_idx = idx;
+        d->f_browse_run   = (float)(idx + 1);
+        load_run_params(d, idx + 1);
+    }
+}
+
+// Enter browse mode on a sweep directory (expects <dir>/histograms/run_XXXX.csv).
+static void open_sweep_dir(Dashboard *d, const char *dir) {
+    snprintf(d->sweep_dir, sizeof(d->sweep_dir), "%s", dir);
+    d->browse_run_count = count_runs(dir);
+    d->sweep_browsing = true;
+    d->browse_run_idx = 0;
+    d->f_browse_run = 1.0f;
+    char path[512];
+    snprintf(path, sizeof(path), "%s/histograms/run_0001.csv", d->sweep_dir);
+    if (import_histograms(d, path)) load_run_params(d, 1);
+    else d->sweep_browsing = false;   // not a sweep dir
+}
+
 void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w) {
     int panel_x = screen_w - panel_w;
     int plot_area_w = panel_x - 20;
@@ -1018,6 +1196,7 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         else if (i == 4) fit_type = 3; // Power law
         draw_hist(cell[i], plots[i].title, plots[i].s, d->plot_log_y[i], d->autoscale_x,
                   ref, target_bars, accent, fit_type, (int)d->f_cheb_order,
+                  d->show_ref && d->ghost_bars, d->show_ref && d->ghost_fit, d->ghost_alpha,
                   d->fit_text[i]);
         // per-plot clickable Y-scale toggle (top-right of the cell)
         Rectangle tg = { cell[i].x + cell[i].width - 52, cell[i].y + 3, 46, 15 };
@@ -1113,22 +1292,30 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 36}, "#133# Stop"))
             batch_request_stop(&d->batch);
     } else if (d->sweep_browsing) {
-        if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 36}, TextFormat("#131# Browse Mode (Run %d)", d->browse_run_idx + 1))) {
+        int total = d->browse_run_count > 0 ? d->browse_run_count : d->browse_run_idx + 1;
+        if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 36},
+                      TextFormat("#131# Browse Mode (Run %d/%d)", d->browse_run_idx + 1, total))) {
             d->sweep_browsing = false;
         }
-        if (GuiButton((Rectangle){panel_x + 12, y + 40, (panel_w - 28)/2, 28}, "#118# Prev")) {
-            d->browse_run_idx--;
+        // Scrub slider: drag across all runs; loads on each integer change.
+        DrawText("Run", (int)panel_x + 12, (int)y + 44, 12, LIGHTGRAY);
+        GuiSlider((Rectangle){panel_x + 46, y + 42, panel_w - 58, 18}, NULL,
+                  TextFormat("%d", d->browse_run_idx + 1), &d->f_browse_run,
+                  1.0f, (float)total);
+        int want = (int)(d->f_browse_run + 0.5f) - 1;
+        if (want != d->browse_run_idx) browse_load(d, want);
+
+        if (GuiButton((Rectangle){panel_x + 12, y + 68, (panel_w - 28)/2, 28}, "#118# Prev"))
+            browse_load(d, d->browse_run_idx - 1);
+        if (GuiButton((Rectangle){panel_x + 16 + (panel_w - 28)/2, y + 68, (panel_w - 28)/2, 28}, "#119# Next"))
+            browse_load(d, d->browse_run_idx + 1);
+
+        // Pin the run you're looking at as the ghost, then scrub to another run to
+        // compare it against -- past-run-vs-past-run overlay.
+        if (GuiButton((Rectangle){panel_x + 12, y + 100, panel_w - 24, 24}, "#77# Pin this run as ghost")) {
             char path[512];
             snprintf(path, sizeof(path), "%s/histograms/run_%04d.csv", d->sweep_dir, d->browse_run_idx + 1);
-            if (!import_histograms(d, path)) d->browse_run_idx++;
-            else load_run_params(d, d->browse_run_idx + 1);
-        }
-        if (GuiButton((Rectangle){panel_x + 16 + (panel_w - 28)/2, y + 40, (panel_w - 28)/2, 28}, "#119# Next")) {
-            d->browse_run_idx++;
-            char path[512];
-            snprintf(path, sizeof(path), "%s/histograms/run_%04d.csv", d->sweep_dir, d->browse_run_idx + 1);
-            if (!import_histograms(d, path)) d->browse_run_idx--;
-            else load_run_params(d, d->browse_run_idx + 1);
+            set_ghost_from_file(d, path);
         }
     } else {
         if (sweep_selected) {
@@ -1138,7 +1325,7 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         }
     }
     y += 46;
-    if (d->sweep_browsing) y += 40;
+    if (d->sweep_browsing) y += 104;
 
     // Export the current histogram data to a timestamped CSV (cwd). Disabled until a
     // batch exists; shows the written filename briefly after a successful save.
@@ -1155,22 +1342,30 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     if (!d->has_batch) GuiEnable();
     y += 32;
     
-    if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 28}, "#05# Browse latest sweep")) {
+    // Browser: latest sweep (quick) or pick any sweep directory.
+    if (GuiButton((Rectangle){panel_x + 12, y, (panel_w - 28)/2, 28}, "#05# Latest")) {
         FILE *p = popen("ls -td sweep_* 2>/dev/null | head -n 1", "r");
         if (p) {
             char latest[256];
             if (fgets(latest, sizeof(latest), p)) {
                 latest[strcspn(latest, "\n")] = 0;
-                strncpy(d->sweep_dir, latest, sizeof(d->sweep_dir));
-                d->sweep_browsing = true;
-                d->browse_run_idx = 0;
-                char path[512];
-                snprintf(path, sizeof(path), "%s/histograms/run_%04d.csv", d->sweep_dir, d->browse_run_idx + 1);
-                import_histograms(d, path);
-                load_run_params(d, d->browse_run_idx + 1);
+                if (latest[0]) open_sweep_dir(d, latest);
             }
             pclose(p);
         }
+    }
+    if (GuiButton((Rectangle){panel_x + 16 + (panel_w - 28)/2, y, (panel_w - 28)/2, 28}, "#01# Open sweep...")) {
+        char dir[256];
+        if (pick_path("Choose a sweep directory", 1, dir, sizeof(dir))) open_sweep_dir(d, dir);
+    }
+    y += 32;
+
+    // Ghost overlay: pick any run/sweep CSV (a past run, another sweep, real data)
+    // to overlay on the current plots for direct comparison.
+    if (GuiButton((Rectangle){panel_x + 12, y, panel_w - 24, 28}, "#146# Pick ghost overlay...")) {
+        char file[512];
+        if (pick_path("Choose a histogram CSV to overlay as ghost", 0, file, sizeof(file)))
+            set_ghost_from_file(d, file);
     }
     y += 32;
 
@@ -1215,7 +1410,17 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         DrawText("(adaptive; updates live)", panel_x + 14, (int)y, 10, (Color){90,120,90,255}); y += 18;
         slider_row(panel_x, y, sw, "Chebyshev order", TextFormat("%d", (int)d->f_cheb_order), &d->f_cheb_order, 1.0f, 9.0f); y += 26;
         GuiCheckBox((Rectangle){panel_x + 12, y, 20, 20}, "Autoscale X (fit data)", &d->autoscale_x); y += 26;
-        GuiCheckBox((Rectangle){panel_x + 12, y, 20, 20}, "Show real data", &d->show_ref); y += 26;
+        GuiCheckBox((Rectangle){panel_x + 12, y, 20, 20}, "Show ghost overlay", &d->show_ref); y += 26;
+        if (d->show_ref) {
+            GuiCheckBox((Rectangle){panel_x + 28, y, 18, 18}, "ghost bars", &d->ghost_bars);
+            GuiCheckBox((Rectangle){panel_x + 28 + (panel_w-40)/2, y, 18, 18}, "ghost fit", &d->ghost_fit);
+            y += 24;
+            if (d->ghost_bars) {
+                slider_row(panel_x, y, sw, "Ghost opacity",
+                           TextFormat("%.0f%%", d->ghost_alpha * 100.0f),
+                           &d->ghost_alpha, 0.05f, 1.0f); y += 26;
+            }
+        }
         DrawText("Click \"Y:log/lin\" on a plot to toggle", panel_x + 14, (int)y, 10, GRAY); y += 22;
     }
     y += 6;
@@ -1223,10 +1428,12 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     // legend
     DrawTextS("overlays:", panel_x + 12, (int)y, 11, GRAY); y += df(16);
     DrawRectangle(panel_x + 12, (int)y + 2, 12, 8, REAL);
-    if (d->ref.loaded)
-        DrawTextS(TextFormat("real (n=%d arrays)", d->ref.narrays), panel_x + 30, (int)y, 11, LIGHTGRAY);
-    else
-        DrawTextS("real data (no reference.dat)", panel_x + 30, (int)y, 11, (Color){150,120,60,255});
+    if (d->ref.loaded) {
+        const char *gname = d->ghost_name[0] ? d->ghost_name : "reference.dat";
+        DrawTextS(TextFormat("ghost: %s", gname), panel_x + 30, (int)y, 11, LIGHTGRAY);
+    } else {
+        DrawTextS("ghost: none (Pick ghost overlay...)", panel_x + 30, (int)y, 11, (Color){150,120,60,255});
+    }
     y += df(16);
     DrawRectangle(panel_x + 12, (int)y + 2, 12, 8, MED);  DrawTextS("live median of data", panel_x + 30, (int)y, 11, LIGHTGRAY); y += df(16);
 

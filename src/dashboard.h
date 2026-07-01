@@ -29,8 +29,12 @@ typedef struct {
     bool  autoscale_x;     // fit each plot's x-window to the data (~99%)
     bool  show_advanced;   // advanced controls collapsible state
 
-    Reference ref;         // real-data reference distributions (may be unloaded)
-    bool  show_ref;        // overlay the real-data curve
+    Reference ref;         // reference/ghost distributions (may be unloaded)
+    bool  show_ref;        // overlay the ghost at all
+    bool  ghost_bars;      // draw the ghost as faded transparent bars
+    bool  ghost_fit;       // draw the ghost's fitted curve (same fit as the batch)
+    float ghost_alpha;     // ghost bar opacity, 0..1
+    char  ghost_name[80];  // label for the current ghost source (file / pinned run)
 
     Batch batch;
     bool  has_batch;       // batch_init has been called (needs free)
@@ -50,6 +54,8 @@ typedef struct {
     int   sweep_counts[6];
     bool  sweep_browsing;
     int   browse_run_idx;
+    int   browse_run_count;   // number of run_*.csv in the browsed sweep (for the scrubber)
+    float f_browse_run;       // slider-backed run index (1-based)
 } Dashboard;
 
 void dashboard_init(Dashboard *d);
