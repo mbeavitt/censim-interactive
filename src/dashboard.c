@@ -302,6 +302,10 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     int n_coeffs = poly_order_actual + 1;
     if (n_coeffs > 10) n_coeffs = 10;
     double M_cheb[100] = {0}, rhs_cheb[10] = {0}; int nfit=0;
+    // log-x span of the bars that actually constrain the fit; the overlay is
+    // clamped to this so a high-order polynomial can't extrapolate (and blow up
+    // via exp()) into the empty tail when the window is widened for the reference.
+    double fit_u_lo = 1e300, fit_u_hi = -1e300;
     double u_min = (lo_v > 0.0f) ? log(lo_v) : -10.0;
     double u_max = (hi_v > 0.0f) ? log(hi_v) : 10.0;
 
@@ -346,6 +350,8 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                                      : 0.5 * (bin_edge(s, fs) + bin_edge(s, fe));
             if (xc > 0.0) {
                 double u = log(xc), y = log((double)v);
+                if (u < fit_u_lo) fit_u_lo = u;
+                if (u > fit_u_hi) fit_u_hi = u;
                 double z = (u_max > u_min) ? 2.0 * (u - u_min) / (u_max - u_min) - 1.0 : 0.0;
                 double T[10];
                 T[0] = 1.0;
@@ -436,6 +442,10 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                 }
                 snprintf(out_fit_text + pos, 128 - pos, "sse=%.2g", sse);
             }
+            // Allow one extra bar-spacing beyond the outermost fitted bars so the
+            // curve runs down to the axis instead of stopping half a bar short.
+            double pad = (nfit > 1) ? (fit_u_hi - fit_u_lo) / (double)(nfit - 1) : 0.0;
+            double draw_lo = fit_u_lo - pad, draw_hi = fit_u_hi + pad;
             int hv = 0; float xprev = 0, yprev = 0;
             for (int k = 0; k <= 64; k++) {
                 float f = (float)k / 64.0f;
@@ -444,6 +454,9 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                          : lo_v + (hi_v - lo_v) * f;
                 if (xv <= 0.0) continue;
                 double u = log(xv);
+                // Don't extrapolate far past the fitted data: break the line outside
+                // the populated range (+1 bar) so it can't ping back up in the tail.
+                if (u < draw_lo || u > draw_hi) { hv = 0; continue; }
                 double z = (u_max > u_min) ? 2.0 * (u - u_min) / (u_max - u_min) - 1.0 : 0.0;
                 double T[10];
                 T[0] = 1.0;
