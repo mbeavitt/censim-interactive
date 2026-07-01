@@ -633,6 +633,9 @@ int main(void) {
     // Initialize simulation
     Simulation sim;
     sim_init(&sim, DEFAULT_INITIAL_SIZE, (unsigned int)time(NULL));
+    // Snapshot the starting parameters so Reset can restore every slider to its
+    // original value (sim_reset only rewinds the array/stats, not the params).
+    SimParams initial_params = sim.params;
 
     // Initialize colorizer
     Colorizer colorizer;
@@ -892,6 +895,10 @@ int main(void) {
         if (GuiButton((Rectangle){panel_x + 210, btn_y, 180, btn_h}, "#72#Reset")) {
             running = false;
             sim_reset(&sim);
+            sim.params = initial_params;   // restore all sliders to their originals
+            gens_per_frame = 100.0f;
+            step_size = 10000;
+            snprintf(step_size_text, sizeof(step_size_text), "%d", step_size);
             colorizer_clear_cache(&colorizer);
             history_clear(&stats_history);
             grid_dirty = true;
