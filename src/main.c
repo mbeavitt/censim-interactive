@@ -331,6 +331,51 @@ static void get_umap_command(char *cmd, size_t cmd_size, const char *fasta_path,
     }
 }
 
+// Open a native "save file" dialog and place the chosen path in `out`.
+// Returns true if a path was selected/derived, false if the user cancelled.
+// macOS uses osascript; Linux prefers zenity (GNOME) then kdialog (KDE), and
+// falls back to a default name in the working directory if neither is present.
+static bool get_save_fasta_path(char *out, size_t out_size, int generation) {
+    char default_name[64];
+    snprintf(default_name, sizeof(default_name), "censim_gen%d.fasta", generation);
+
+    char cmd[512];
+#ifdef __APPLE__
+    snprintf(cmd, sizeof(cmd),
+        "osascript -e 'POSIX path of (choose file name with prompt \"Save FASTA as:\" default name \"%s\")' 2>/dev/null",
+        default_name);
+#else
+    if (system("command -v zenity >/dev/null 2>&1") == 0) {
+        snprintf(cmd, sizeof(cmd),
+            "zenity --file-selection --save --confirm-overwrite "
+            "--title=\"Save FASTA as\" --filename=\"%s\" 2>/dev/null",
+            default_name);
+    } else if (system("command -v kdialog >/dev/null 2>&1") == 0) {
+        snprintf(cmd, sizeof(cmd),
+            "kdialog --getsavefilename \".\" \"%s\" 2>/dev/null", default_name);
+    } else {
+        // No dialog utility available: write to the working directory.
+        snprintf(out, out_size, "%s", default_name);
+        return true;
+    }
+#endif
+
+    FILE *pipe = popen(cmd, "r");
+    if (!pipe) return false;
+
+    char path[1024] = {0};
+    bool ok = false;
+    if (fgets(path, sizeof(path), pipe)) {
+        path[strcspn(path, "\n")] = 0;
+        if (strlen(path) > 0) {
+            snprintf(out, out_size, "%s", path);
+            ok = true;
+        }
+    }
+    pclose(pipe);
+    return ok;
+}
+
 #define RAYGUI_IMPLEMENTATION
 #include "raygui.h"
 
@@ -656,29 +701,18 @@ int main(void) {
             grid_dirty = true;
         }
         if (GuiButton((Rectangle){panel_x + 210, btn_y, 180, btn_h}, "#07#Export FASTA")) {
-            // Use macOS native save dialog via osascript
-            char cmd[512];
-            snprintf(cmd, sizeof(cmd),
-                "osascript -e 'POSIX path of (choose file name with prompt \"Save FASTA as:\" default name \"censim_gen%d.fasta\")' 2>/dev/null",
-                sim.stats.generation);
-            FILE *pipe = popen(cmd, "r");
-            if (pipe) {
-                char filepath[1024] = {0};
-                if (fgets(filepath, sizeof(filepath), pipe)) {
-                    // Remove trailing newline
-                    filepath[strcspn(filepath, "\n")] = 0;
-                    if (strlen(filepath) > 0) {
-                        FILE *f = fopen(filepath, "w");
-                        if (f) {
-                            for (int i = 0; i < sim.array.num_units; i++) {
-                                fprintf(f, ">repeat_%d\n%s\n", i + 1, sim.array.units[i]);
-                            }
-                            fclose(f);
-                            printf("Exported %d repeats to %s\n", sim.array.num_units, filepath);
-                        }
+            char filepath[1024] = {0};
+            if (get_save_fasta_path(filepath, sizeof(filepath), sim.stats.generation)) {
+                FILE *f = fopen(filepath, "w");
+                if (f) {
+                    for (int i = 0; i < sim.array.num_units; i++) {
+                        fprintf(f, ">repeat_%d\n%s\n", i + 1, sim.array.units[i]);
                     }
+                    fclose(f);
+                    printf("Exported %d repeats to %s\n", sim.array.num_units, filepath);
+                } else {
+                    fprintf(stderr, "Export FASTA: could not open '%s' for writing\n", filepath);
                 }
-                pclose(pipe);
             }
         }
         btn_y += btn_spacing + 20;
