@@ -10,6 +10,8 @@ Centromeres are regions of chromosomes made up of thousands of tandemly repeated
 
 Each colored tile represents a 178bp repeat unit. Similar sequences get similar colors, so you can see evolutionary patterns emerge as the array changes.
 
+The model is based on the one described here: https://www.biorxiv.org/content/10.1101/2025.06.02.657473v1
+
 ## Download
 
 **macOS:** [CenSim.dmg](https://github.com/mbeavitt/censim-interactive/releases/latest/download/CenSim.dmg)
