@@ -189,47 +189,53 @@ static float edge_at(const Histogram *h, int i) {
     return h->min + (h->max - h->min) * i / h->nbins;
 }
 
-// Overlay the ghost distribution: faded transparent bars and/or a fitted curve
-// (same fit_type/order as the batch), self-normalised to its own peak over the
-// same x-window as the sim. Draws behind the sim bars for a ghost-histogram look.
-static float g_gdens[DASH_MAXBINS];  // single-threaded UI: reused each frame
-static void draw_ghost_overlay(const Histogram *ref, float px, float py, float pw, float ph,
-                               float lo_v, float hi_v, int log_x, bool log_y, int bars,
-                               int fit_type, int poly_order, bool do_bars, bool do_fit,
-                               float bar_alpha, bool count_y) {
-    if (!ref || ref->total == 0 || bars < 1) return;
+static float g_gdens[DASH_MAXBINS];  // ghost per-bar PROBABILITY; reused each frame
+
+// Aggregate the ghost histogram into `bars` display bars as a PROBABILITY (fraction
+// of the ghost dataset) on the display axis, matching the sim's probability bars.
+// Returns the peak so the sim and ghost can share one y-scale. Fills g_gdens.
+static float ghost_fill_prob(const Histogram *ref, float lo_v, float hi_v, int log_x,
+                             int bars, bool count_y) {
+    if (!ref || ref->total <= 0 || bars < 1) return 0.0f;
     if (bars > DASH_MAXBINS) bars = DASH_MAXBINS;
-
-    // Value edge of display bar j (0..bars) within the window.
-    #define GVAT(fr) (log_x ? powf(10.0f, log10f(lo_v) + (log10f(hi_v) - log10f(lo_v)) * (fr)) \
-                            : lo_v + (hi_v - lo_v) * (fr))
-
-    // Aggregate the ref histogram's fine bins into the display bars (by value),
-    // as a density (count per linear x-width), matching the sim's bars.
     for (int j = 0; j < bars; j++) g_gdens[j] = 0.0f;
     for (int i = 0; i < ref->nbins; i++) {
         if (ref->counts[i] == 0) continue;
-        float c = log_x ? sqrtf(edge_at(ref, i) * edge_at(ref, i + 1))
-                        : 0.5f * (edge_at(ref, i) + edge_at(ref, i + 1));
+        float c = ref->log_scale ? sqrtf(edge_at(ref, i) * edge_at(ref, i + 1))
+                                 : 0.5f * (edge_at(ref, i) + edge_at(ref, i + 1));
         float f = val_frac(c, lo_v, hi_v, log_x);
         if (f < 0.0f || f >= 1.0f) continue;
         int j = (int)(f * bars); if (j >= bars) j = bars - 1;
         g_gdens[j] += (float)ref->counts[i];
     }
-    float dmax = 0.0f, dmin = 0.0f; int seen = 0;
+    float peak = 0.0f;
+    float L = log10f(lo_v > 0 ? lo_v : 1e-6f), H = log10f(hi_v > 0 ? hi_v : 1e-6f);
     for (int j = 0; j < bars; j++) {
-        float vlo = GVAT((float)j / bars), vhi = GVAT((float)(j + 1) / bars);
-        float w = vhi - vlo; if (w <= 0.0f) w = 1.0f;
-        if (!count_y) g_gdens[j] /= w;   // count mode keeps raw sim/array counts
-        if (g_gdens[j] > 0.0f) { if (!seen || g_gdens[j] > dmax) dmax = g_gdens[j];
-                                 if (!seen || g_gdens[j] < dmin) dmin = g_gdens[j]; seen = 1; }
+        if (!count_y) {
+            float vlo = log_x ? powf(10.0f, L + (H-L)*j/bars)     : lo_v + (hi_v-lo_v)*j/bars;
+            float vhi = log_x ? powf(10.0f, L + (H-L)*(j+1)/bars) : lo_v + (hi_v-lo_v)*(j+1)/bars;
+            float w = vhi - vlo; if (w <= 0.0f) w = 1.0f;
+            g_gdens[j] /= w;             // density
+        }
+        g_gdens[j] /= (float)ref->total; // -> probability (fraction of dataset)
+        if (g_gdens[j] > peak) peak = g_gdens[j];
     }
-    if (dmax <= 0.0f) return;
-    if (dmin <= 0.0f) dmin = dmax;
-    float lmn = log10f(dmin), lmx = log10f(dmax);
-    if (lmx - lmn < 1e-6f) lmn = lmx - 1.0f;
+    return peak;
+}
 
-    #define GH01(d) (log_y ? (log10f(d) - lmn) / (lmx - lmn) : (d) / dmax)
+// Draw the ghost (faded bars + fit) from the pre-filled g_gdens probabilities, on
+// the SHARED y-scale (dmax / lminv / lmaxv) so sim and ghost share one axis.
+static void draw_ghost_overlay(const Histogram *ref, float px, float py, float pw, float ph,
+                               float lo_v, float hi_v, int log_x, bool log_y, int bars,
+                               int fit_type, int poly_order, bool do_bars, bool do_fit,
+                               float bar_alpha, bool count_y,
+                               float dmax, float lminv, float lmaxv) {
+    if (!ref || ref->total == 0 || bars < 1 || dmax <= 0.0f) return;
+    if (bars > DASH_MAXBINS) bars = DASH_MAXBINS;
+
+    #define GVAT(fr) (log_x ? powf(10.0f, log10f(lo_v) + (log10f(hi_v) - log10f(lo_v)) * (fr)) \
+                            : lo_v + (hi_v - lo_v) * (fr))
+    #define GH01(d) (log_y ? (log10f(d) - lminv) / (lmaxv - lminv) : (d) / dmax)
 
     // Faded bars.
     if (do_bars) {
@@ -296,8 +302,8 @@ static void draw_ghost_overlay(const Histogram *ref, float px, float py, float p
         double sx = 0, sx2 = 0; long tot = 0;
         for (int i = 0; i < ref->nbins; i++) {
             if (ref->counts[i] <= 0) continue;
-            double x = log_x ? sqrt((double)edge_at(ref, i) * edge_at(ref, i + 1))
-                             : 0.5 * (edge_at(ref, i) + edge_at(ref, i + 1));
+            double x = ref->log_scale ? sqrt((double)edge_at(ref, i) * edge_at(ref, i + 1))
+                                      : 0.5 * (edge_at(ref, i) + edge_at(ref, i + 1));
             sx += x * ref->counts[i]; sx2 += x * x * ref->counts[i]; tot += ref->counts[i];
         }
         if (tot > 1) {
@@ -308,15 +314,14 @@ static void draw_ghost_overlay(const Histogram *ref, float px, float py, float p
                 #define GPDF(xv) (fit_type==2 \
                     ? exp(-0.5*(((xv)-mu)/sd)*(((xv)-mu)/sd)) / (sd*sqrt(2*M_PI)) \
                     : ((xv)>0 && k_sh>0 ? pow((xv),k_sh-1)*exp(-(xv)/th)/(pow(th,k_sh)*tgamma(k_sh)) : 0))
-                // count mode weights the pdf by local bar width so the curve matches count bars
+                // Probability: fraction-per-bar = pdf*width (count mode) or pdf (density),
+                // on the same shared scale as the bars -- no peak re-fit needed.
                 #define GWLOC(fr) (count_y ? (double)(GVAT(fminf((fr)+0.5f/bars,1.0f)) - GVAT(fmaxf((fr)-0.5f/bars,0.0f))) : 1.0)
-                double pmax = 0;                       // scale the pdf peak to the ghost peak
-                for (int kk = 0; kk <= 64; kk++) { float fr=(float)kk/64.0f; double p = GPDF(GVAT(fr))*GWLOC(fr); if (p > pmax) pmax = p; }
-                if (pmax > 0) {
+                {
                     int hv = 0; float xp = 0, yp = 0;
                     for (int kk = 0; kk <= 64; kk++) {
                         float fr = (float)kk/64.0f; float xv = GVAT(fr);
-                        double dd = GPDF(xv) * GWLOC(fr) / pmax * dmax;
+                        double dd = GPDF(xv) * GWLOC(fr);
                         if (!(dd > 0)) { hv = 0; continue; }
                         float h01 = GH01((float)dd); if (h01<0) h01=0; else if (h01>1) h01=1;
                         float X = px + fr*pw, Y = py + ph*(1.0f - h01);
@@ -470,9 +475,11 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
         float vlo = DVAT((float)j / bars), vhi = DVAT((float)(j + 1) / bars);
         float w = vhi - vlo; if (w <= 0.0f) w = 1.0f;
         bar_w[j] = w;
-        // count_y (per-array metrics): keep raw counts = "how many sims in this bin";
-        // otherwise a density (count per unit x) that recovers shape across log bins.
+        // count_y (per-array metrics): fraction of sims in this bin; otherwise a
+        // probability density (fraction per unit x). Dividing by total puts the sim
+        // and the ghost on ONE shared probability scale.
         if (!count_y) dens[j] /= w;
+        if (s->total > 0) dens[j] /= (float)s->total;
         bar_xc[j] = log_x ? sqrt((double)vlo * vhi) : 0.5 * (vlo + vhi);
         float v = dens[j];
         if (v > 0.0f) {
@@ -494,6 +501,11 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
             nfit++;
         }
     }
+    // Fold the ghost's probability peak into the shared y-scale (also fills g_gdens
+    // used when the ghost is drawn below), so sim + ghost sit on ONE axis.
+    float ghost_peak = ghost_fill_prob(ref, lo_v, hi_v, log_x, bars, count_y);
+    if (ghost_peak > dmax_v) dmax_v = ghost_peak;
+
     if (dmax_v <= 0.0f) dmax_v = 1.0f;
     if (dmin_v <= 0.0f) dmin_v = dmax_v;
     float lminv = log10f(dmin_v), lmaxv = log10f(dmax_v);
@@ -517,12 +529,14 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
         DrawRectangle(xL, yT, w, 1, bar_top);
     }
 
-    // y-axis: top = max plotted value, bottom = 0 (lin) or min (log); scale tag.
-    // For log-x plots the value is a density (count per unit x), else a raw count.
-    DrawText(fmt(dmax_v), (int)b.x + 3, (int)py - 4, 9, axc);
-    DrawText(log_y ? fmt(dmin_v) : "0", (int)b.x + 3, (int)(py + ph - 8), 9, axc);
+    // y-axis: probability scale shared by sim + ghost. count_y shows % of the
+    // dataset in the bin; otherwise a probability density (fraction per unit x).
+    const char *ytop = count_y ? TextFormat("%.0f%%", dmax_v * 100.0f) : fmt(dmax_v);
+    DrawText(ytop, (int)b.x + 3, (int)py - 4, 9, axc);
+    DrawText(log_y ? (count_y ? TextFormat("%.1f%%", dmin_v*100.0f) : fmt(dmin_v)) : "0",
+             (int)b.x + 3, (int)(py + ph - 8), 9, axc);
     DrawText(log_y ? "log" : "lin", (int)b.x + 3, (int)(py + ph/2), 9, axc);
-    DrawText(count_y ? "sims" : (s->log_scale ? "dens" : "cnt"), (int)b.x + 3, (int)(py + ph/2 + 11), 8, shade(accent, 0.3f));
+    DrawText(count_y ? "%" : "pdf", (int)b.x + 3, (int)(py + ph/2 + 11), 8, shade(accent, 0.3f));
 
     // x-axis: 3 ticks across the displayed window (geometric mid for log)
     float xmid = log_x ? sqrtf(lo_v * hi_v) : 0.5f * (lo_v + hi_v);
@@ -535,7 +549,8 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
 
     // ghost overlay (faded bars + fit), on the same display axis
     draw_ghost_overlay(ref, px, py, pw, ph, lo_v, hi_v, log_x, log_y, bars,
-                       fit_type, poly_order, ghost_bars, ghost_fit, ghost_alpha, count_y);
+                       fit_type, poly_order, ghost_bars, ghost_fit, ghost_alpha, count_y,
+                       dmax_v, lminv, lmaxv);
 
     // Polynomial overlays (Chebyshev or Power law)
     if ((fit_type == 1 || fit_type == 3) && nfit >= n_coeffs) {
@@ -615,9 +630,9 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                     pdf_x = exp(log_pdf);
                 }
             }
-            // density: total*pdf; count mode: expected sims in the local bar (×width)
+            // probability: pdf (density) or pdf*width (count mode: fraction per bar)
             double wloc = count_y ? (DVAT(fminf(f + 0.5f/bars, 1.0f)) - DVAT(fmaxf(f - 0.5f/bars, 0.0f))) : 1.0;
-            double d = total_for_normal * pdf_x * wloc;
+            double d = pdf_x * wloc;
             if (!(d > 0.0)) { hv = 0; continue; }
             float h01 = log_y ? (log10f((float)d) - lminv) / (lmaxv - lminv)
                               : (float)d / dmax_v;
@@ -645,7 +660,7 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                     pdf_x = exp(log_pdf);
                 }
             }
-            double d_pred = total_for_normal * pdf_x * (count_y ? bar_w[j] : 1.0);
+            double d_pred = pdf_x * (count_y ? bar_w[j] : 1.0);
             double diff = dens[j] - d_pred;
             sse += diff * diff;
         }
@@ -702,23 +717,34 @@ void dashboard_init(Dashboard *d) {
     d->plot_log_y[5] = true;   // composite   log
     // Per-plot log-X defaults: match each metric's natural (binned) scale.
     d->plot_log_x[0] = false;  // unique/kb   lin
-    d->plot_log_x[1] = false;  // HORs/kb     lin
+    d->plot_log_x[1] = true;   // HORs/kb     log (spans orders of magnitude)
     d->plot_log_x[2] = true;   // block size  log
     d->plot_log_x[3] = true;   // block gap   log
     d->plot_log_x[4] = false;  // similarity  lin
     d->plot_log_x[5] = true;   // composite   log
 
-    // Real-data reference: try $CENSIM_REFERENCE, ./reference.dat, then next to the
-    // executable. Absent is fine -- the overlay just won't draw.
+    // Default ghost: the real Arabidopsis histogram (66 genomes). Try $CENSIM_REFERENCE,
+    // ./data/... , then next to / above the executable, then the legacy reference.dat.
     reference_init(&d->ref);
     d->show_ref = true;
     d->ghost_bars = true;   // faded histogram bars
     d->ghost_fit = true;    // fitted curve, same fit as the batch
     d->ghost_alpha = 0.28f; // ghost bar opacity
+
     const char *env = getenv("CENSIM_REFERENCE");
-    if (!(env && reference_load(&d->ref, env)) && !reference_load(&d->ref, "reference.dat")) {
+    const char *appdir = GetApplicationDirectory();
+    char p1[1024], p2[1024];
+    snprintf(p1, sizeof(p1), "%sdata/real_arabidopsis_hist.csv", appdir);
+    snprintf(p2, sizeof(p2), "%s../../data/real_arabidopsis_hist.csv", appdir);
+    bool got = (env && reference_load_run(&d->ref, env))
+             || reference_load_run(&d->ref, "data/real_arabidopsis_hist.csv")
+             || reference_load_run(&d->ref, p1)
+             || reference_load_run(&d->ref, p2);
+    if (got) {
+        snprintf(d->ghost_name, sizeof(d->ghost_name), "real Arabidopsis (66 genomes)");
+    } else if (!reference_load(&d->ref, "reference.dat")) {   // legacy fallback
         char path[1024];
-        snprintf(path, sizeof(path), "%sreference.dat", GetApplicationDirectory());
+        snprintf(path, sizeof(path), "%sreference.dat", appdir);
         reference_load(&d->ref, path);
     }
 }
