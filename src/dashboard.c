@@ -1551,10 +1551,9 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
         }
     }
 
-    // Record the content bottom (in unscrolled coords) for next frame's clamp.
-    d->panel_content_h = y - d->panel_scroll;
-    EndScissorMode();
     // Ghost fit parameters (only when a ghost fit is actually being drawn).
+    // Must be drawn inside the scissor region and before panel_content_h is
+    // recorded, otherwise it's excluded from the scroll clamp and never reachable.
     bool any_ghost_fit = false;
     for (int i = 0; i < 6; i++) if (d->ghost_fit_text[i][0] != '\0') { any_ghost_fit = true; break; }
     if (any_ghost_fit) {
@@ -1567,6 +1566,10 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
             }
         }
     }
+
+    // Record the content bottom (in unscrolled coords) for next frame's clamp.
+    d->panel_content_h = y - d->panel_scroll;
+    EndScissorMode();
 
     // Sweep log intercept
     if (d->sweep_running && d->has_batch) {
