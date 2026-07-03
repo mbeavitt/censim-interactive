@@ -1,6 +1,7 @@
 #include "reference.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 void reference_init(Reference *r) {
     memset(r, 0, sizeof(*r));
