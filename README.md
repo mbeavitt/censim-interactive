@@ -10,6 +10,20 @@ Centromeres are regions of chromosomes made up of thousands of tandemly repeated
 
 Each colored tile represents a 178bp repeat unit. Similar sequences get similar colors, so you can see evolutionary patterns emerge as the array changes.
 
+## New in 1.1: Batch mode!
+
+Watching a single array evolve is fun, but one run doesn't tell you much — evolution is noisy. So now you can flip to the **batch dashboard** and run hundreds of trajectories at once, watching the *distributions* of the summary metrics build up live: HORs per kb, block size, block gap, similarity, and a composite score. Each plot fits a curve as the data lands, so you get real numbers out, not just pretty shapes.
+
+![Batch dashboard](screenshot_batch.png)
+
+From there you can:
+
+- **Sweep** a parameter across a range of runs and scrub back through the results
+- **Overlay a ghost** — a past run, another sweep, or a *real* dataset — on top of the live plots, to see how close your simulation gets to actual centromere data
+- **Export** everything to CSV and reopen old runs later
+
+Flip between the single-array view and the batch dashboard with the toggle up top.
+
 ## Download
 
 **macOS:** [CenSim.dmg](https://github.com/mbeavitt/censim-interactive/releases/latest/download/CenSim.dmg)
@@ -57,6 +71,7 @@ make -C build config=release
 
 ## Controls
 
+- **Single View / Batch**: switch between the live array and the multi-run dashboard (button up top)
 - **Cmd+F** (macOS) / **F11**: Toggle maximize
 - **Start/Stop**: Run or pause the simulation
 - **Step N**: Advance N generations
