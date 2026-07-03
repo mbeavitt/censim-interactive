@@ -10,6 +10,8 @@ Centromeres are regions of chromosomes made up of thousands of tandemly repeated
 
 Each colored tile represents a 178bp repeat unit. Similar sequences get similar colors, so you can see evolutionary patterns emerge as the array changes.
 
+The model is based on the one described here: https://www.biorxiv.org/content/10.1101/2025.06.02.657473v1
+
 ## New in 1.1: Batch mode!
 
 Watching a single array evolve is fun, but one run doesn't tell you much — evolution is noisy. So now you can flip to the **batch dashboard** and run hundreds of trajectories at once, watching the *distributions* of the summary metrics build up live: HORs per kb, block size, block gap, similarity, and a composite score. Each plot fits a curve as the data lands, so you get real numbers out, not just pretty shapes.
