@@ -30,6 +30,9 @@ typedef struct {
     bool  autoscale_x;     // fit each plot's x-window to the data (~99%)
     bool  show_advanced;   // advanced controls collapsible state
 
+    float panel_scroll;    // control-panel vertical scroll offset (<= 0)
+    float panel_content_h; // measured control-panel content bottom (unscrolled px)
+
     Reference ref;         // reference/ghost distributions (may be unloaded)
     bool  show_ref;        // overlay the ghost at all
     bool  ghost_bars;      // draw the ghost as faded transparent bars

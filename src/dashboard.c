@@ -1311,9 +1311,26 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     // ----- control panel (right) -----
     DrawRectangle(panel_x, 0, panel_w, screen_h, (Color){25, 25, 30, 255});
     DrawLine(panel_x, 0, panel_x, screen_h, GRID);
+
+    // The panel content (below the fixed title) often overflows -- Advanced Options
+    // and the Fit Parameters readout push well past the bottom edge. Let the wheel
+    // scroll it, like the single view. Content height is measured each frame (the
+    // final y below) and used to clamp the offset on the following frame.
+    const int panel_head = 44;  // fixed title band; content scrolls beneath it
+    if (mouse.x >= panel_x && mouse.x <= screen_w) {
+        float wheel = GetMouseWheelMove();
+        if (wheel != 0.0f) d->panel_scroll += wheel * 30.0f;
+    }
+    float max_scroll = -(d->panel_content_h - screen_h + 12);
+    if (max_scroll > 0.0f) max_scroll = 0.0f;
+    if (d->panel_scroll > 0.0f)         d->panel_scroll = 0.0f;
+    if (d->panel_scroll < max_scroll)   d->panel_scroll = max_scroll;
+
     DrawText("Batch Setup", panel_x + 12, 12, 22, WHITE);
 
-    float y = 50;
+    BeginScissorMode(panel_x, panel_head, panel_w, screen_h - panel_head);
+
+    float y = 50 + d->panel_scroll;
     float sw = panel_w - 200;  // slider width
 
     // Essentials
@@ -1498,6 +1515,10 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
             DrawTextS(d->fit_text[i], panel_x + 14, (int)y, 10, (Color){90, 120, 90, 255}); y += df(16);
         }
     }
+
+    // Record the content bottom (in unscrolled coords) for next frame's clamp.
+    d->panel_content_h = y - d->panel_scroll;
+    EndScissorMode();
 
     // Sweep log intercept
     if (d->sweep_running && d->has_batch) {
