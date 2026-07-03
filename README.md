@@ -35,11 +35,14 @@ make -C build config=release
 ## Features
 
 - **Real-time simulation** of repeat array evolution
+- **Batch dashboard**: run hundreds of trajectories at once and watch their metric distributions (HORs/kb, block size, similarity…) build up live, with fitted curves
+- **Parameter sweeps**: scan a parameter across runs and scrub through the results
+- **Ghost overlays**: overlay a past run or a real dataset on the plots for direct comparison
 - **Live statistics panel** showing diversity, unique sequences, and array size over time
 - **UMAP visualization** for sequence similarity (requires Python with umap-learn)
 - **Configurable mutation models**: Poisson, negative binomial, geometric, power law
 - **Elastic bounding** to keep array size near a target
-- **Export to FASTA** for downstream analysis
+- **Export to FASTA / CSV** for downstream analysis
 
 ## Parameters
 
@@ -50,7 +53,7 @@ make -C build config=release
 | SNP rate | 0.1 | Expected point mutations per generation |
 | Target size | 10000 | Target array size for elastic bounding |
 | Elasticity | 0.1 | Pull strength toward target size |
-| Dup/Del bias | 50% | Base probability of duplication vs deletion |
+| Dup/Del ratio | 1x | Size ratio of duplications to deletions (frequency coupled for zero net drift) |
 
 ## Controls
 
