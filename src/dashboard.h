@@ -24,7 +24,8 @@ typedef struct {
 
     float f_nbins;         // target on-screen bars per plot (adaptive; applied live)
     float f_cheb_order;    // target polynomial order for Chebyshev fit
-    char fit_text[6][128]; // stores the text readout of the fit for each plot
+    char fit_text[6][128]; // stores the text readout of the sim fit for each plot
+    char ghost_fit_text[6][128]; // same, for the ghost overlay's fit
     bool  plot_log_y[6];   // per-plot log-scale Y toggle
     bool  plot_log_x[6];   // per-plot log-scale X (display axis) toggle
     bool  autoscale_x;     // fit each plot's x-window to the data (~99%)

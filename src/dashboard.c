@@ -229,7 +229,9 @@ static void draw_ghost_overlay(const Histogram *ref, float px, float py, float p
                                float lo_v, float hi_v, int log_x, bool log_y, int bars,
                                int fit_type, int poly_order, bool do_bars, bool do_fit,
                                float bar_alpha, bool count_y,
-                               float dmax, float lminv, float lmaxv) {
+                               float dmax, float lminv, float lmaxv,
+                               char *out_fit_text) {
+    if (out_fit_text) out_fit_text[0] = '\0';
     if (!ref || ref->total == 0 || bars < 1 || dmax <= 0.0f) return;
     if (bars > DASH_MAXBINS) bars = DASH_MAXBINS;
 
@@ -278,6 +280,25 @@ static void draw_ghost_overlay(const Histogram *ref, float px, float py, float p
         }
         double cf[10];
         if (nfit >= n_coeffs && solve_sys(M, rhs, cf, n_coeffs)) {
+            if (out_fit_text) {   // same readout format as the sim fit
+                double sse = 0.0;
+                for (int j = 0; j < bars; j++) {
+                    if (g_gdens[j] <= 0.0f) continue;
+                    float vlo = GVAT((float)j / bars), vhi = GVAT((float)(j + 1) / bars);
+                    double xc = log_x ? sqrt((double)vlo * vhi) : 0.5 * (vlo + vhi);
+                    if (xc <= 0) continue;
+                    double u = log(xc), y = log((double)g_gdens[j]);
+                    double z = (umax > umin) ? 2.0 * (u - umin) / (umax - umin) - 1.0 : 0.0;
+                    double T[10]; T[0] = 1; T[1] = z;
+                    for (int k = 2; k < n_coeffs; k++) T[k] = 2.0 * z * T[k-1] - T[k-2];
+                    double pred = 0; for (int k = 0; k < n_coeffs; k++) pred += cf[k]*T[k];
+                    sse += (y - pred) * (y - pred);
+                }
+                int pos = 0;
+                for (int i = 0; i < n_coeffs && pos < 120; i++)
+                    pos += snprintf(out_fit_text + pos, 128 - pos, "c%d=%.2g ", i, cf[i]);
+                snprintf(out_fit_text + pos, 128 - pos, "sse=%.2g", sse);
+            }
             double pad = (nfit > 1) ? (fu_hi - fu_lo) / (double)(nfit - 1) : 0.0;
             double dlo = fu_lo - pad, dhi = fu_hi + pad;
             int hv = 0; float xprev = 0, yprev = 0;
@@ -329,6 +350,18 @@ static void draw_ghost_overlay(const Histogram *ref, float px, float py, float p
                         xp = X; yp = Y; hv = 1;
                     }
                 }
+                if (out_fit_text) {   // same readout format as the sim fit
+                    double sse = 0.0;
+                    for (int j = 0; j < bars; j++) {
+                        if (g_gdens[j] <= 0.0f) continue;
+                        float fr = ((float)j + 0.5f) / bars;
+                        double pred = GPDF(GVAT(fr)) * GWLOC(fr);
+                        double diff = (double)g_gdens[j] - pred;
+                        sse += diff * diff;
+                    }
+                    if (fit_type == 2) snprintf(out_fit_text, 128, "mu=%.2g, std=%.2g, sse=%.2g", mu, sd, sse);
+                    else snprintf(out_fit_text, 128, "k=%.2g, theta=%.2g, sse=%.2g", k_sh, th, sse);
+                }
                 #undef GPDF
                 #undef GWLOC
             }
@@ -342,8 +375,9 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
                       bool log_y, bool autoscale, const Histogram *ref,
                       int target_bars, Color accent, int fit_type, int poly_order, bool log_x,
                       bool count_y, bool ghost_bars, bool ghost_fit, float ghost_alpha,
-                      char *out_fit_text) {
+                      char *out_fit_text, char *out_ghost_fit_text) {
     if (out_fit_text) out_fit_text[0] = '\0';
+    if (out_ghost_fit_text) out_ghost_fit_text[0] = '\0';
     Color axc = shade(accent, 0.55f);  // dimmed accent for border + axis text
     DrawRectangleRec(b, BG);
     DrawRectangleLinesEx(b, 1, axc);
@@ -550,7 +584,7 @@ static void draw_hist(Rectangle b, const char *title, const HistSnap *s,
     // ghost overlay (faded bars + fit), on the same display axis
     draw_ghost_overlay(ref, px, py, pw, ph, lo_v, hi_v, log_x, log_y, bars,
                        fit_type, poly_order, ghost_bars, ghost_fit, ghost_alpha, count_y,
-                       dmax_v, lminv, lmaxv);
+                       dmax_v, lminv, lmaxv, out_ghost_fit_text);
 
     // Polynomial overlays (Chebyshev or Power law)
     if ((fit_type == 1 || fit_type == 3) && nfit >= n_coeffs) {
@@ -706,6 +740,7 @@ void dashboard_init(Dashboard *d) {
     for (int i = 0; i < 6; i++) {
         d->plot_log_y[i] = false;
         d->fit_text[i][0] = '\0';
+        d->ghost_fit_text[i][0] = '\0';
     }
     d->autoscale_x = false;
     // Per-plot log-Y defaults (left->right, top->bottom): lin lin log / log lin log
@@ -1243,7 +1278,7 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
                   ref, target_bars, accent, fit_type, (int)d->f_cheb_order, d->plot_log_x[i],
                   i < 2,   // unique/kb + HORs/kb are per-array: show frequency (sim count)
                   d->show_ref && d->ghost_bars, d->show_ref && d->ghost_fit, d->ghost_alpha,
-                  d->fit_text[i]);
+                  d->fit_text[i], d->ghost_fit_text[i]);
         // per-plot clickable Y- and X-scale toggles (top-right of the cell)
         Rectangle tg = { cell[i].x + cell[i].width - 52, cell[i].y + 3, 46, 15 };
         bool hov = CheckCollisionPointRec(mouse, tg);
@@ -1508,7 +1543,7 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     DrawRectangle(panel_x + 12, (int)y + 2, 12, 8, MED);  DrawTextS("live median of data", panel_x + 30, (int)y, 11, LIGHTGRAY); y += df(16);
 
     y += 10;
-    DrawTextS("Fit Parameters", panel_x + 12, (int)y, 14, GRAY); y += df(22);
+    DrawTextS("Sim Fit Parameters", panel_x + 12, (int)y, 14, GRAY); y += df(22);
     for (int i = 0; i < 6; i++) {
         if (d->fit_text[i][0] != '\0') {
             DrawTextS(plots[i].title, panel_x + 14, (int)y, 11, LIGHTGRAY); y += df(14);
@@ -1519,6 +1554,19 @@ void dashboard_update_draw(Dashboard *d, int screen_w, int screen_h, int panel_w
     // Record the content bottom (in unscrolled coords) for next frame's clamp.
     d->panel_content_h = y - d->panel_scroll;
     EndScissorMode();
+    // Ghost fit parameters (only when a ghost fit is actually being drawn).
+    bool any_ghost_fit = false;
+    for (int i = 0; i < 6; i++) if (d->ghost_fit_text[i][0] != '\0') { any_ghost_fit = true; break; }
+    if (any_ghost_fit) {
+        y += 10;
+        DrawTextS("Ghost Fit Parameters", panel_x + 12, (int)y, 14, GRAY); y += df(22);
+        for (int i = 0; i < 6; i++) {
+            if (d->ghost_fit_text[i][0] != '\0') {
+                DrawTextS(plots[i].title, panel_x + 14, (int)y, 11, LIGHTGRAY); y += df(14);
+                DrawTextS(d->ghost_fit_text[i], panel_x + 14, (int)y, 10, (Color){130, 90, 90, 255}); y += df(16);
+            }
+        }
+    }
 
     // Sweep log intercept
     if (d->sweep_running && d->has_batch) {

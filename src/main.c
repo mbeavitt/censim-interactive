@@ -449,6 +449,14 @@ static void apply_theme(int idx, StainedGlass *sg) {
     GuiSetStyle(DEFAULT, TEXT_COLOR_PRESSED,   ColorToInt(g_theme.bg));
     GuiSetStyle(DEFAULT, LINE_COLOR,           ColorToInt(g_theme.gui_border));
 
+    // Sliders draw their value text to the RIGHT of the bar, on the panel
+    // background -- not inside a filled control. The DEFAULT pressed/focused
+    // text color (g_theme.bg) is meant for buttons whose base turns to accent,
+    // so on a slider it makes the value vanish while you drag. Keep the slider
+    // value legible in every state.
+    GuiSetStyle(SLIDER, TEXT_COLOR_FOCUSED,    ColorToInt(g_theme.text));
+    GuiSetStyle(SLIDER, TEXT_COLOR_PRESSED,    ColorToInt(g_theme.text));
+
     if (sg) sg_set_palette(sg, g_theme.sg_pal);
 }
 
