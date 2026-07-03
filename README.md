@@ -14,15 +14,15 @@ The model is based on the one described here: https://www.biorxiv.org/content/10
 
 ## New in 1.1: Batch mode!
 
-Watching a single array evolve is fun, but one run doesn't tell you much — evolution is noisy. So now you can flip to the **batch dashboard** and run hundreds of trajectories at once, watching the *distributions* of the summary metrics build up live: HORs per kb, block size, block gap, similarity, and a composite score. Each plot fits a curve as the data lands, so you get real numbers out, not just pretty shapes.
+Watching a single array evolve is informative but it's desirable to understand the long term behaviour of the system across many runs. Now you can flip to the batch dashboard and run hundreds of trajectories at once, watching the distributions of the summary metrics build up live: HORs per kb, block size, block gap, similarity, and a composite score. Each plot fits a curve, which is useful for quantifying distribution shapes (you can look at the fit parameters).
 
 ![Batch dashboard](screenshot_batch.png)
 
-From there you can:
+From this view you can:
 
-- **Sweep** a parameter across a range of runs and scrub back through the results
-- **Overlay a ghost** — a past run, another sweep, or a *real* dataset — on top of the live plots, to see how close your simulation gets to actual centromere data
-- **Export** everything to CSV and reopen old runs later
+- Sweep a parameter across a range of runs and scrub back through the results
+- Overlay a ghost (past run, another sweep, or a real dataset) on top of the live plots, to see how close your simulation gets to actual centromere data
+- Export everything to CSV and reopen old runs later
 
 Flip between the single-array view and the batch dashboard with the toggle up top.
 
